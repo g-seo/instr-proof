@@ -1,0 +1,94 @@
+"""Deterministic extraction and resolution of supported path claims."""
+
+from __future__ import annotations
+
+import posixpath
+import re
+from urllib.parse import urlsplit
+
+from instrproof.models import ClaimForm, InstructionSource, PathClaim, RepoPath
+
+
+_FENCE_OPEN = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
+_INLINE_CODE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+_INLINE_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+")
+
+
+def _line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _mask_fenced_blocks(text: str) -> str:
+    """Mask fenced blocks while preserving offsets and line numbers."""
+    masked: list[str] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for line in text.splitlines(keepends=True):
+        if fence_character is None:
+            opening = _FENCE_OPEN.match(line)
+            if opening is None:
+                masked.append(line)
+                continue
+            fence = opening.group("fence")
+            fence_character = fence[0]
+            fence_length = len(fence)
+        else:
+            closing = re.match(
+                rf"^[ \t]*{re.escape(fence_character)}{{{fence_length},}}[ \t]*(?:\r?\n)?$",
+                line,
+            )
+            if closing is not None:
+                fence_character = None
+                fence_length = 0
+        masked.append("".join(char if char in "\r\n" else " " for char in line))
+    return "".join(masked)
+
+
+def _resolve(target: str, source: RepoPath, *, markdown: bool) -> RepoPath | None:
+    if not target or "\x00" in target or "\\" in target:
+        return None
+    candidate = target
+    if markdown:
+        candidate = candidate.strip()
+        if candidate.startswith("<") and candidate.endswith(">"):
+            candidate = candidate[1:-1]
+        elif any(char.isspace() for char in candidate):
+            return None
+        parsed = urlsplit(candidate)
+        if parsed.scheme or parsed.netloc or parsed.query or not parsed.path:
+            return None
+        candidate = parsed.path
+    if candidate.startswith("/") or re.match(r"^[A-Za-z]:", candidate):
+        return None
+    joined = posixpath.join(source.parent, candidate) if markdown else candidate
+    try:
+        return RepoPath(joined)
+    except ValueError:
+        return None
+
+
+def extract_path_claims(source: InstructionSource) -> tuple[PathClaim, ...]:
+    """Extract supported claims from one instruction document."""
+    text = _mask_fenced_blocks(source.content)
+    claims: list[PathClaim] = []
+
+    for match in _MARKDOWN_LINK.finditer(text):
+        written = match.group(1)
+        target = _resolve(written, source.path, markdown=True)
+        if target is not None:
+            claims.append(
+                PathClaim(source.path, ClaimForm.MARKDOWN_LINK, written, target, _line_number(text, match.start()))
+            )
+
+    for match in _INLINE_CODE.finditer(text):
+        written = match.group(1)
+        if _INLINE_PATH.fullmatch(written) is None:
+            continue
+        target = _resolve(written, source.path, markdown=False)
+        if target is not None:
+            claims.append(
+                PathClaim(source.path, ClaimForm.INLINE_PATH, written, target, _line_number(text, match.start()))
+            )
+
+    return tuple(claims)
