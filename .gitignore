@@ -1,0 +1,12 @@
+# Local environment files
+.env
+.env.*
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Instruction and Speckit
+.specify/
+AGENTS.md
