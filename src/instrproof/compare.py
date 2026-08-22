@@ -116,9 +116,10 @@ def compare_contracts(
 def compare_repository(repository: GitRepository, base_ref: str) -> ComparisonResult:
     """Run the shared typed-contract pipeline for BASE and working-tree HEAD."""
     snapshot = repository.resolve_base(base_ref)
+    discovery_config = repository.instruction_discovery_config()
     base_claims: tuple[Claim, ...] = tuple(
         claim
-        for source in repository.base_instruction_sources(snapshot)
+        for source in repository.base_instruction_sources(snapshot, discovery_config)
         for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
     )
     base_scripts: frozenset[str] | None = None
@@ -136,7 +137,7 @@ def compare_repository(repository: GitRepository, base_ref: str) -> ComparisonRe
     )
     head_claims: tuple[Claim, ...] = tuple(
         claim
-        for source in repository.head_instruction_sources()
+        for source in repository.head_instruction_sources(discovery_config)
         for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
     )
     head_scripts: frozenset[str] | None = None

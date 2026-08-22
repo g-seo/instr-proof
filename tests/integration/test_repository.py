@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from instrproof.models import RepoPath
+from instrproof.discovery import InstructionDiscoveryConfig
 from instrproof.repository import GitRepository, RepositoryError
 
 from conftest import git
@@ -30,6 +31,110 @@ def test_discovers_repository_and_reads_base_and_head(committed_repo: Path) -> N
 def test_head_omits_deleted_instruction(committed_repo: Path) -> None:
     (committed_repo / "AGENTS.md").unlink()
     assert GitRepository.discover(committed_repo).head_instruction_sources() == ()
+
+
+def test_reads_all_default_instruction_names_from_base_and_head(git_repo: Path) -> None:
+    for relative in ("AGENTS.md", "CLAUDE.md", "packages/auth/AGENTS.md", "docs/CLAUDE.md"):
+        path = git_repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative + "\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "default sources")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+
+    expected = ["AGENTS.md", "CLAUDE.md", "docs/CLAUDE.md", "packages/auth/AGENTS.md"]
+    assert [source.path.value for source in repository.base_instruction_sources(snapshot)] == expected
+    assert [source.path.value for source in repository.head_instruction_sources()] == expected
+
+
+def test_configured_sources_are_loaded_and_deduplicated(git_repo: Path) -> None:
+    for relative in ("AGENTS.md", "docs/agent-instructions.md", ".claude/rules/a.md", ".claude/rules/deep/b.md"):
+        path = git_repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(relative + "\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "configured sources")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+    config = InstructionDiscoveryConfig.from_strings(
+        ["docs/agent-instructions.md", ".claude/rules/**/*.md", "AGENTS.md"]
+    )
+    expected = [
+        ".claude/rules/a.md",
+        ".claude/rules/deep/b.md",
+        "AGENTS.md",
+        "docs/agent-instructions.md",
+    ]
+
+    assert [source.path.value for source in repository.base_instruction_sources(snapshot, config)] == expected
+    assert [source.path.value for source in repository.head_instruction_sources(config)] == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"\xff", "not valid UTF-8"),
+        (b"{", "malformed JSON"),
+        (b"[]", "root must be an object"),
+        (b'{"unknown":[]}', "unsupported key"),
+        (b'{"instructions":{}}', "instructions must be an array"),
+        (b'{"instructions":[1]}', "entries must be strings"),
+        (b'{"instructions":["../outside.md"]}', "invalid instruction rule"),
+    ],
+)
+def test_invalid_discovery_configuration_is_explicit(
+    git_repo: Path, content: bytes, message: str
+) -> None:
+    (git_repo / "instrproof.json").write_bytes(content)
+    with pytest.raises(RepositoryError, match=message):
+        GitRepository.discover(git_repo).instruction_discovery_config()
+
+
+def test_absent_configuration_has_no_additional_rules(git_repo: Path) -> None:
+    assert GitRepository.discover(git_repo).instruction_discovery_config() == InstructionDiscoveryConfig()
+
+
+def test_unreadable_discovery_configuration_is_explicit(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = git_repo / "instrproof.json"
+    config.write_text("{}\n", encoding="utf-8")
+    original = Path.read_bytes
+
+    def fail(path: Path) -> bytes:
+        if path.name == "instrproof.json":
+            raise PermissionError("denied")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail)
+    with pytest.raises(RepositoryError, match="cannot read instrproof.json"):
+        GitRepository.discover(git_repo).instruction_discovery_config()
+
+
+def test_same_rules_discover_base_and_head_sources_independently(git_repo: Path) -> None:
+    docs = git_repo / "docs"
+    docs.mkdir()
+    (docs / "base.md").write_text("BASE instructions.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/*.md"]}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base source set")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+    config = repository.instruction_discovery_config()
+
+    (docs / "base.md").unlink()
+    (docs / "head.md").write_text("HEAD instructions.\n", encoding="utf-8")
+
+    assert [
+        source.path.value
+        for source in repository.base_instruction_sources(snapshot, config)
+    ] == ["docs/base.md"]
+    assert [
+        source.path.value for source in repository.head_instruction_sources(config)
+    ] == ["docs/head.md"]
 
 
 def test_invalid_base_is_explicit(committed_repo: Path) -> None:

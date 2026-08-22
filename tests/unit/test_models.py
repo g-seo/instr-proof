@@ -4,6 +4,7 @@ from instrproof.models import (
     ContractIdentity,
     ContractType,
     EvidenceState,
+    InstructionSource,
     PackageManager,
     PackageScriptClaim,
     Regression,
@@ -24,6 +25,11 @@ def test_repo_path_normalizes_git_style_paths(raw: str, expected: str) -> None:
 def test_repo_path_rejects_invalid_or_escaping_paths(raw: str) -> None:
     with pytest.raises(ValueError):
         RepoPath(raw)
+
+
+def test_instruction_source_accepts_any_discovered_repository_path() -> None:
+    source = InstructionSource(RepoPath("docs/agent-instructions.md"), "Guidance.\n")
+    assert source.path == RepoPath("docs/agent-instructions.md")
 
 
 def test_contract_identity_uses_source_type_and_normalized_target() -> None:

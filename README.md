@@ -27,9 +27,48 @@ uv run instrproof diff --base origin/main
 
 BASE is read from the specified Git commit without checking it out. HEAD is the current working tree, including tracked modifications and non-ignored untracked files, so the same workflow supports local changes and clean CI checkouts.
 
+## Instruction discovery
+
+By default, InstrProof discovers every repository file named `AGENTS.md` or
+`CLAUDE.md`, at the repository root or at any nested depth. Each discovered
+document is an independent instruction source, identified by its complete,
+repository-relative `/`-separated path.
+
+Repositories can add exact files and glob patterns with an optional root
+`instrproof.json`:
+
+```json
+{
+  "instructions": [
+    ".claude/rules/**/*.md",
+    "docs/agent-instructions.md"
+  ]
+}
+```
+
+The file must be UTF-8 JSON with an object root and may contain only the
+optional `instructions` array of strings. Paths and patterns are
+repository-relative and case-sensitive. `*`, `?`, and bracket expressions
+match within one path segment; `**` as a complete segment matches zero or more
+segments. Paths use `/` on every platform and cannot be absolute, escape the
+repository, contain NUL or backslash characters, or contain malformed glob
+expressions.
+
+Overlapping and duplicate rules are allowed. InstrProof normalizes and
+deduplicates matches by complete repository-relative path, so each physical
+document is analyzed once per repository state. A valid rule matching no files
+is not an error. Malformed, invalid, or unreadable configuration is an explicit
+analysis error and returns status `2`.
+
+The current working-tree configuration is read once per invocation. The same
+rules discover sources independently from BASE and HEAD; neither state assumes
+the other's files exist. Discovery only includes files in repository-contract
+analysis and does not model any coding agent's loading, precedence, inheritance,
+or scope behavior.
+
 ## Supported instruction contracts
 
-InstrProof searches repository files named `AGENTS.md` or `CLAUDE.md`. It recognizes two deliberately narrow forms:
+InstrProof recognizes two deliberately narrow forms in every discovered source:
 
 - Repository-root-relative paths in inline code, such as `` `src/auth/service.py` ``.
 - Local Markdown links, such as `[API](api.md)`, resolved relative to the instruction document containing the link.

@@ -133,6 +133,18 @@ def test_extracts_markdown_link_relative_to_instruction_document() -> None:
     ]
 
 
+def test_custom_nested_source_preserves_both_path_resolution_bases() -> None:
+    source = InstructionSource(
+        RepoPath("packages/auth/instructions.md"),
+        "See [architecture](docs/architecture.md).\nUse `docs/root-policy.md`.\n",
+    )
+
+    assert [claim.normalized_target.value for claim in extract_path_claims(source)] == [
+        "packages/auth/docs/architecture.md",
+        "docs/root-policy.md",
+    ]
+
+
 def test_ignores_plain_path_like_prose() -> None:
     source = InstructionSource(RepoPath("AGENTS.md"), "Maybe src/auth/service.py is relevant.\n")
     assert extract_path_claims(source) == ()

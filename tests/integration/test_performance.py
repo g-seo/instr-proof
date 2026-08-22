@@ -24,7 +24,15 @@ def test_100_documents_and_1000_candidates_complete_within_five_seconds(
             target.write_text("evidence\n", encoding="utf-8")
         for script_index in range(5):
             claims.append(f"Run pnpm verify:{script_index}.")
-        (directory / "AGENTS.md").write_text("\n".join(claims) + "\n", encoding="utf-8")
+        instruction_name = "AGENTS.md" if document_index % 2 == 0 else "rules.md"
+        (directory / instruction_name).write_text(
+            "\n".join(claims) + "\n", encoding="utf-8"
+        )
+
+    (git_repo / "instrproof.json").write_text(
+        json.dumps({"instructions": ["instructions/**/rules.md"]}) + "\n",
+        encoding="utf-8",
+    )
 
     (git_repo / "package.json").write_text(
         json.dumps(

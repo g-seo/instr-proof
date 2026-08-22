@@ -17,6 +17,153 @@ def commit_package_contract(repo: Path) -> None:
     git(repo, "commit", "-qm", "package contract base")
 
 
+def test_default_nested_instruction_source_reports_complete_path(git_repo: Path, capsys) -> None:
+    source = git_repo / "packages" / "auth" / "AGENTS.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Use `src/service.py`.\n", encoding="utf-8")
+    target = git_repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "nested default")
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    assert "source=packages/auth/AGENTS.md:1  target=src/service.py" in capsys.readouterr().out
+
+
+def test_configured_sources_flow_through_both_contract_extractors(git_repo: Path, capsys) -> None:
+    rules = git_repo / ".claude" / "rules"
+    rules.mkdir(parents=True)
+    (rules / "paths.md").write_text("Use `src/service.py`.\n", encoding="utf-8")
+    (rules / "scripts.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":[".claude/rules/**/*.md",".claude/rules/paths.md"]}\n',
+        encoding="utf-8",
+    )
+    target = git_repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    (git_repo / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "configured contracts")
+    target.unlink()
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    output = capsys.readouterr().out
+    assert output.count("source=.claude/rules/paths.md") == 1
+    assert "PathExists  source=.claude/rules/paths.md:1  target=src/service.py" in output
+    assert "PackageScriptExists  source=.claude/rules/scripts.md:1  target=typecheck" in output
+
+
+def test_zero_match_configuration_succeeds(git_repo: Path, capsys) -> None:
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["missing/**/*.md"]}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "zero match")
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_malformed_configuration_is_cli_error(git_repo: Path, capsys) -> None:
+    (git_repo / "instrproof.json").write_text("{", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "bad config")
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: instrproof.json is malformed JSON\n"
+
+
+def test_configured_nested_source_preserves_both_path_resolution_bases(
+    git_repo: Path, capsys
+) -> None:
+    source = git_repo / "packages" / "auth" / "instructions.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "See [architecture](docs/architecture.md).\nUse `docs/root-policy.md`.\n",
+        encoding="utf-8",
+    )
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["packages/auth/instructions.md"]}\n', encoding="utf-8"
+    )
+    local_target = source.parent / "docs" / "architecture.md"
+    local_target.parent.mkdir()
+    local_target.write_text("architecture\n", encoding="utf-8")
+    root_target = git_repo / "docs" / "root-policy.md"
+    root_target.parent.mkdir()
+    root_target.write_text("policy\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "nested resolution")
+    local_target.unlink()
+    root_target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    output = capsys.readouterr().out
+    assert "target=packages/auth/docs/architecture.md" in output
+    assert "target=docs/root-policy.md" in output
+
+
+def test_configured_source_set_changes_use_existing_claim_survival(
+    git_repo: Path, capsys
+) -> None:
+    instructions = git_repo / "instructions"
+    instructions.mkdir()
+    (instructions / "retained.md").write_text("Use `targets/retained.md`.\n", encoding="utf-8")
+    (instructions / "deleted.md").write_text("Use `targets/deleted.md`.\n", encoding="utf-8")
+    (instructions / "updated.md").write_text("Use `targets/old.md`.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["instructions/*.md"]}\n', encoding="utf-8"
+    )
+    targets = git_repo / "targets"
+    targets.mkdir()
+    for name in ("retained.md", "deleted.md", "old.md"):
+        (targets / name).write_text(name + "\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "survival baseline")
+
+    (targets / "retained.md").unlink()
+    (targets / "deleted.md").unlink()
+    (instructions / "deleted.md").unlink()
+    (targets / "old.md").unlink()
+    (targets / "new.md").write_text("new\n", encoding="utf-8")
+    (instructions / "updated.md").write_text("Use `targets/new.md`.\n", encoding="utf-8")
+    (instructions / "head-only.md").write_text("Use `targets/missing.md`.\n", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    output = capsys.readouterr().out
+    assert output.count("PathExists") == 1
+    assert "source=instructions/retained.md:1  target=targets/retained.md" in output
+
+
+def test_identical_targets_from_configured_sources_are_distinct_contracts(
+    git_repo: Path, capsys
+) -> None:
+    instructions = git_repo / "instructions"
+    instructions.mkdir()
+    for name in ("first.md", "second.md"):
+        (instructions / name).write_text("Use `targets/shared.md`.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["instructions/*.md"]}\n', encoding="utf-8"
+    )
+    target = git_repo / "targets" / "shared.md"
+    target.parent.mkdir()
+    target.write_text("shared\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "distinct sources")
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    output = capsys.readouterr().out
+    assert "Found 2 instruction contract regressions:" in output
+    assert "source=instructions/first.md:1" in output
+    assert "source=instructions/second.md:1" in output
+
+
 def test_package_script_exists_in_base_and_head_passes(git_repo: Path, capsys) -> None:
     commit_package_contract(git_repo)
 

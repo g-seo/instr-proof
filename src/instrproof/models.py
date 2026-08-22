@@ -68,10 +68,6 @@ class InstructionSource:
     path: RepoPath
     content: str
 
-    def __post_init__(self) -> None:
-        if self.path.name not in {"AGENTS.md", "CLAUDE.md"}:
-            raise ValueError("unsupported instruction source")
-
 
 @dataclass(frozen=True)
 class PathClaim:

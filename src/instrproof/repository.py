@@ -7,10 +7,14 @@ import os
 from pathlib import Path
 import subprocess
 
+from instrproof.discovery import (
+    InstructionDiscoveryConfig,
+    discover_instruction_paths,
+)
 from instrproof.models import InstructionSource, RepoPath
 
 
-INSTRUCTION_NAMES = {"AGENTS.md", "CLAUDE.md"}
+CONFIG_NAME = "instrproof.json"
 
 
 class RepositoryError(RuntimeError):
@@ -61,7 +65,40 @@ class GitRepository:
         output = self._git("rev-parse", "--verify", "--end-of-options", f"{ref}^{{tree}}")
         return output.decode("ascii").strip()
 
-    def base_instruction_sources(self, snapshot: str) -> tuple[InstructionSource, ...]:
+    def instruction_discovery_config(self) -> InstructionDiscoveryConfig:
+        config_path = self.root / CONFIG_NAME
+        if not os.path.lexists(config_path):
+            return InstructionDiscoveryConfig()
+        try:
+            content = config_path.read_bytes()
+        except OSError as exc:
+            raise RepositoryError(f"cannot read {CONFIG_NAME}") from exc
+        try:
+            document = json.loads(content.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise RepositoryError(f"{CONFIG_NAME} is not valid UTF-8") from exc
+        except json.JSONDecodeError as exc:
+            raise RepositoryError(f"{CONFIG_NAME} is malformed JSON") from exc
+        if not isinstance(document, dict):
+            raise RepositoryError(f"{CONFIG_NAME} root must be an object")
+        unsupported = set(document) - {"instructions"}
+        if unsupported:
+            raise RepositoryError(f"{CONFIG_NAME} contains an unsupported key")
+        instructions = document.get("instructions", [])
+        if not isinstance(instructions, list):
+            raise RepositoryError(f"{CONFIG_NAME} instructions must be an array")
+        if any(not isinstance(value, str) for value in instructions):
+            raise RepositoryError(f"{CONFIG_NAME} instruction entries must be strings")
+        try:
+            return InstructionDiscoveryConfig.from_strings(instructions)
+        except ValueError as exc:
+            raise RepositoryError(f"{CONFIG_NAME} has an invalid instruction rule: {exc}") from exc
+
+    def base_instruction_sources(
+        self,
+        snapshot: str,
+        config: InstructionDiscoveryConfig | None = None,
+    ) -> tuple[InstructionSource, ...]:
         output = self._git("ls-tree", "-rz", "--name-only", snapshot)
         paths: list[RepoPath] = []
         for raw in output.split(b"\0"):
@@ -71,10 +108,9 @@ class GitRepository:
                 path = RepoPath(raw.decode("utf-8"))
             except (UnicodeDecodeError, ValueError) as exc:
                 raise RepositoryError("BASE contains an unsupported path") from exc
-            if path.name in INSTRUCTION_NAMES:
-                paths.append(path)
+            paths.append(path)
         sources = []
-        for path in sorted(paths):
+        for path in discover_instruction_paths(paths, config):
             content = self._git("show", f"{snapshot}:{path.value}")
             try:
                 decoded = content.decode("utf-8")
@@ -99,7 +135,9 @@ class GitRepository:
         self._git("cat-file", "-e", f"{snapshot}:{path.value}")
         return True
 
-    def head_instruction_sources(self) -> tuple[InstructionSource, ...]:
+    def head_instruction_sources(
+        self, config: InstructionDiscoveryConfig | None = None
+    ) -> tuple[InstructionSource, ...]:
         output = self._git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
         paths: list[RepoPath] = []
         for raw in output.split(b"\0"):
@@ -110,10 +148,10 @@ class GitRepository:
             except (UnicodeDecodeError, ValueError) as exc:
                 raise RepositoryError("working tree contains an unsupported path") from exc
             native = self.root.joinpath(*path.value.split("/"))
-            if path.name in INSTRUCTION_NAMES and native.is_file():
+            if native.is_file():
                 paths.append(path)
         sources = []
-        for path in sorted(set(paths)):
+        for path in discover_instruction_paths(paths, config):
             native = self.root.joinpath(*path.value.split("/"))
             try:
                 content = native.read_text(encoding="utf-8")
