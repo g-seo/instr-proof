@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from time import monotonic
 
@@ -15,13 +16,23 @@ def test_100_documents_and_1000_candidates_complete_within_five_seconds(
         directory = git_repo / "instructions" / f"group-{document_index:03}"
         directory.mkdir(parents=True)
         claims = []
-        for claim_index in range(10):
+        for claim_index in range(5):
             relative = f"targets/group-{document_index:03}/file-{claim_index:02}.txt"
             claims.append(f"Use `{relative}`.")
             target = git_repo / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("evidence\n", encoding="utf-8")
+        for script_index in range(5):
+            claims.append(f"Run pnpm verify:{script_index}.")
         (directory / "AGENTS.md").write_text("\n".join(claims) + "\n", encoding="utf-8")
+
+    (git_repo / "package.json").write_text(
+        json.dumps(
+            {"scripts": {f"verify:{index}": f"verify command {index}" for index in range(5)}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     git(git_repo, "add", ".")
     git(git_repo, "commit", "-qm", "performance fixture")

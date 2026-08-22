@@ -26,10 +26,15 @@ def format_result(result: ComparisonResult) -> str:
     count = len(result.regressions)
     noun = "regression" if count == 1 else "regressions"
     rows = [f"Found {count} instruction contract {noun}:"]
-    rows.extend(
-        f"{item.identity.contract_type}  source={item.identity.source.value}  target={item.identity.target.value}"
-        for item in result.regressions
-    )
+    for item in result.regressions:
+        source = item.identity.source.value
+        if item.head_location is not None and item.head_location.line is not None:
+            source = f"{source}:{item.head_location.line}"
+        rows.append(
+            f"{item.identity.contract_type}  source={source}  "
+            f"target={item.identity.target}  base={item.base_evidence}  "
+            f"head={item.head_evidence}"
+        )
     return "\n".join(rows)
 
 

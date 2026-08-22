@@ -8,6 +8,220 @@ from instrproof.repository import GitRepository, RepositoryError
 from conftest import git
 
 
+def commit_package_contract(repo: Path) -> None:
+    (repo / "AGENTS.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
+    (repo / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc --noEmit"}}\n', encoding="utf-8"
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "package contract base")
+
+
+def test_package_script_exists_in_base_and_head_passes(git_repo: Path, capsys) -> None:
+    commit_package_contract(git_repo)
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+@pytest.mark.parametrize("head_script", [None, "check-types"])
+def test_reports_removed_or_renamed_package_script(
+    git_repo: Path, capsys, head_script: str | None
+) -> None:
+    commit_package_contract(git_repo)
+    scripts = {} if head_script is None else {head_script: "tsc --noEmit"}
+    import json
+
+    (git_repo / "package.json").write_text(
+        json.dumps({"scripts": scripts}) + "\n", encoding="utf-8"
+    )
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Found 1 instruction contract regression:\n"
+        "PackageScriptExists  source=AGENTS.md:1  target=typecheck  "
+        "base=present  head=missing\n"
+    )
+    assert captured.err == ""
+
+
+def test_package_syntax_change_survives_and_reports_current_line(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Run pnpm run typecheck.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc --noEmit"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base")
+    (git_repo / "AGENTS.md").write_text(
+        "Updated prose.\n\nRun yarn typecheck.\n", encoding="utf-8"
+    )
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    assert "source=AGENTS.md:3  target=typecheck" in capsys.readouterr().out
+
+
+def test_coordinated_package_script_rename_passes(git_repo: Path, capsys) -> None:
+    commit_package_contract(git_repo)
+    (git_repo / "AGENTS.md").write_text("Run pnpm check-types.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text(
+        '{"scripts":{"check-types":"tsc --noEmit"}}\n', encoding="utf-8"
+    )
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_removed_package_instruction_retires_contract(git_repo: Path, capsys) -> None:
+    commit_package_contract(git_repo)
+    (git_repo / "AGENTS.md").write_text("No package command remains.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_path_regression_includes_diagnostic_evidence(committed_repo: Path, capsys) -> None:
+    (committed_repo / "src" / "auth" / "service.py").unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=committed_repo) == 1
+    assert capsys.readouterr().out == (
+        "Found 1 instruction contract regression:\n"
+        "PathExists  source=AGENTS.md:1  target=src/auth/service.py  "
+        "base=present  head=missing\n"
+    )
+
+
+def test_package_script_missing_in_base_is_not_monitored(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "missing script")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_nested_package_script_is_not_base_evidence(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
+    nested = git_repo / "packages" / "app"
+    nested.mkdir(parents=True)
+    (nested / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "nested script")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_malformed_required_base_package_manifest_is_error(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text("{", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "malformed base")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: BASE package.json is malformed JSON\n"
+
+
+def test_malformed_required_head_package_manifest_is_error(git_repo: Path, capsys) -> None:
+    commit_package_contract(git_repo)
+    (git_repo / "package.json").write_text("{", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: HEAD package.json is malformed JSON\n"
+
+
+def test_path_only_diff_does_not_read_unrelated_malformed_manifest(
+    committed_repo: Path, capsys
+) -> None:
+    (committed_repo / "package.json").write_text("{", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=committed_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_base_manifest_is_lazy_when_base_has_no_package_candidate(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "AGENTS.md").write_text("Use `src/service.py`.\n", encoding="utf-8")
+    target = git_repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    (git_repo / "package.json").write_text("{", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "path-only malformed manifest")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_head_manifest_is_lazy_when_package_claim_does_not_survive(
+    git_repo: Path, capsys
+) -> None:
+    commit_package_contract(git_repo)
+    (git_repo / "AGENTS.md").write_text("Claim removed.\n", encoding="utf-8")
+    (git_repo / "package.json").write_text("{", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_mixed_path_and_package_regressions_share_one_sorted_result(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "AGENTS.md").write_text(
+        "Run pnpm typecheck.\nUse `src/service.py`.\n", encoding="utf-8"
+    )
+    target = git_repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    (git_repo / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc --noEmit"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "mixed base")
+    target.unlink()
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    assert capsys.readouterr().out == (
+        "Found 2 instruction contract regressions:\n"
+        "PackageScriptExists  source=AGENTS.md:1  target=typecheck  "
+        "base=present  head=missing\n"
+        "PathExists  source=AGENTS.md:2  target=src/service.py  "
+        "base=present  head=missing\n"
+    )
+
+
+def test_multiple_package_regressions_are_deterministic(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text(
+        "Run pnpm z-check.\nRun yarn a-check.\nRun npm run z-check.\n",
+        encoding="utf-8",
+    )
+    (git_repo / "package.json").write_text(
+        '{"scripts":{"z-check":"z","a-check":"a"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "multiple package base")
+    (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Found 2 instruction contract regressions:"
+    assert "target=a-check" in lines[1]
+    assert "source=AGENTS.md:2" in lines[1]
+    assert "target=z-check" in lines[2]
+    assert "source=AGENTS.md:1" in lines[2]
+
+
 def test_passes_when_target_remains(committed_repo: Path, capsys) -> None:
     assert main(["diff", "--base", "HEAD"], cwd=committed_repo) == 0
     captured = capsys.readouterr()
@@ -21,7 +235,8 @@ def test_reports_removed_inline_target(committed_repo: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert captured.out == (
         "Found 1 instruction contract regression:\n"
-        "PathExists  source=AGENTS.md  target=src/auth/service.py\n"
+        "PathExists  source=AGENTS.md:1  target=src/auth/service.py  "
+        "base=present  head=missing\n"
     )
     assert captured.err == ""
 
@@ -36,7 +251,7 @@ def test_reports_removed_nested_markdown_target(git_repo: Path, capsys) -> None:
     (docs / "api.md").unlink()
 
     assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
-    assert "source=docs/CLAUDE.md  target=docs/api.md" in capsys.readouterr().out
+    assert "source=docs/CLAUDE.md:1  target=docs/api.md" in capsys.readouterr().out
 
 
 def test_regressions_are_sorted(git_repo: Path, capsys) -> None:
@@ -105,7 +320,7 @@ def test_nested_link_resolves_dot_segments(git_repo: Path, capsys) -> None:
     target.unlink()
 
     assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
-    assert "source=docs/agents/CLAUDE.md  target=docs/api.md" in capsys.readouterr().out
+    assert "source=docs/agents/CLAUDE.md:1  target=docs/api.md" in capsys.readouterr().out
 
 
 def test_missing_base_argument_is_usage_error(capsys) -> None:

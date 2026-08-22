@@ -8,6 +8,12 @@ from instrproof.repository import GitRepository, RepositoryError
 from conftest import git
 
 
+def write_package_json(repo: Path, script_body: str = "tsc --noEmit") -> None:
+    (repo / "package.json").write_text(
+        '{"scripts":{"typecheck":' + f'"{script_body}"' + '}}\n', encoding="utf-8"
+    )
+
+
 def test_discovers_repository_and_reads_base_and_head(committed_repo: Path) -> None:
     repository = GitRepository.discover(committed_repo / "src")
     commit = repository.resolve_base("HEAD")
@@ -105,3 +111,91 @@ def test_tree_object_is_a_valid_base(committed_repo: Path) -> None:
         "AGENTS.md"
     ]
     assert repository.base_target_exists(snapshot, RepoPath("src/auth/service.py"))
+
+
+def test_reads_root_package_scripts_from_base_and_head(git_repo: Path) -> None:
+    write_package_json(git_repo)
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base package")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+
+    assert repository.base_package_scripts(snapshot) == frozenset({"typecheck"})
+    assert repository.head_package_scripts() == frozenset({"typecheck"})
+
+
+def test_script_command_body_does_not_change_script_evidence(git_repo: Path) -> None:
+    write_package_json(git_repo)
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base package")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+    write_package_json(git_repo, "tsc --noEmit --pretty false")
+
+    assert repository.base_package_scripts(snapshot) == frozenset({"typecheck"})
+    assert repository.head_package_scripts() == frozenset({"typecheck"})
+
+
+def test_absent_or_scripts_free_root_manifest_has_no_script_evidence(git_repo: Path) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+
+    assert repository.base_package_scripts(snapshot) == frozenset()
+    assert repository.head_package_scripts() == frozenset()
+    (git_repo / "package.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+    assert repository.head_package_scripts() == frozenset()
+
+
+def test_nested_package_manifest_is_ignored(git_repo: Path) -> None:
+    nested = git_repo / "packages" / "app"
+    nested.mkdir(parents=True)
+    (nested / "package.json").write_text(
+        '{"scripts":{"typecheck":"tsc"}}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "nested only")
+    repository = GitRepository.discover(git_repo)
+
+    assert repository.base_package_scripts(repository.resolve_base("HEAD")) == frozenset()
+    assert repository.head_package_scripts() == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"\xff", "not valid UTF-8"),
+        (b"{", "malformed JSON"),
+        (b"[]", "root must be an object"),
+        (b'{"scripts":[]}', "scripts must be an object"),
+    ],
+)
+def test_invalid_required_base_package_manifest_is_explicit(
+    git_repo: Path, content: bytes, message: str
+) -> None:
+    (git_repo / "package.json").write_bytes(content)
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "invalid manifest")
+    repository = GitRepository.discover(git_repo)
+
+    with pytest.raises(RepositoryError, match=message):
+        repository.base_package_scripts(repository.resolve_base("HEAD"))
+
+
+def test_unreadable_head_package_manifest_is_explicit(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_package_json(git_repo)
+    repository = GitRepository.discover(git_repo)
+    original = Path.read_bytes
+
+    def fail_manifest(path: Path) -> bytes:
+        if path.name == "package.json":
+            raise PermissionError("denied")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_manifest)
+    with pytest.raises(RepositoryError, match="cannot read HEAD package.json"):
+        repository.head_package_scripts()

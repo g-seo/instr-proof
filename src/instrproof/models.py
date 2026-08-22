@@ -1,8 +1,8 @@
-"""Immutable domain values for instruction path contracts."""
+"""Immutable domain values for typed instruction contracts."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import posixpath
 import re
@@ -47,6 +47,22 @@ class ClaimForm(StrEnum):
     MARKDOWN_LINK = "MARKDOWN_LINK"
 
 
+class ContractType(StrEnum):
+    PATH_EXISTS = "PathExists"
+    PACKAGE_SCRIPT_EXISTS = "PackageScriptExists"
+
+
+class PackageManager(StrEnum):
+    NPM = "npm"
+    PNPM = "pnpm"
+    YARN = "yarn"
+
+
+class EvidenceState(StrEnum):
+    PRESENT = "present"
+    MISSING = "missing"
+
+
 @dataclass(frozen=True)
 class InstructionSource:
     path: RepoPath
@@ -66,25 +82,69 @@ class PathClaim:
     line: int | None = None
 
 
+@dataclass(frozen=True)
+class PackageScriptClaim:
+    source: RepoPath
+    package_manager: PackageManager
+    written_command: str
+    normalized_target: str
+    line: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.normalized_target:
+            raise ValueError("package script target cannot be empty")
+        if self.line is not None and self.line < 1:
+            raise ValueError("source line must be positive")
+
+
+@dataclass(frozen=True)
+class SourceLocation:
+    source: RepoPath
+    line: int | None = None
+    written_claim: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.line is not None and self.line < 1:
+            raise ValueError("source line must be positive")
+
+
 @dataclass(frozen=True, order=True)
 class ContractIdentity:
     source: RepoPath
-    contract_type: str
-    target: RepoPath
+    contract_type: ContractType
+    target: str
 
     def __post_init__(self) -> None:
-        if self.contract_type != "PathExists":
-            raise ValueError("unsupported contract type")
+        if not isinstance(self.contract_type, ContractType):
+            try:
+                object.__setattr__(self, "contract_type", ContractType(self.contract_type))
+            except ValueError as exc:
+                raise ValueError("unsupported contract type") from exc
+        if isinstance(self.target, RepoPath):
+            object.__setattr__(self, "target", self.target.value)
+        if not isinstance(self.target, str) or not self.target:
+            raise ValueError("contract target cannot be empty")
 
 
 @dataclass(frozen=True)
 class PathExistsContract:
     identity: ContractIdentity
+    base_location: SourceLocation | None = field(default=None, compare=False)
+
+
+@dataclass(frozen=True)
+class PackageScriptExistsContract:
+    identity: ContractIdentity
+    base_location: SourceLocation | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
 class Regression:
     identity: ContractIdentity
+    base_location: SourceLocation | None = field(default=None, compare=False)
+    head_location: SourceLocation | None = field(default=None, compare=False)
+    base_evidence: EvidenceState | None = field(default=None, compare=False)
+    head_evidence: EvidenceState | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

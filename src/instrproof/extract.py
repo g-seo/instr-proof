@@ -1,4 +1,4 @@
-"""Deterministic extraction and resolution of supported path claims."""
+"""Deterministic extraction of supported path and package-script claims."""
 
 from __future__ import annotations
 
@@ -6,13 +6,105 @@ import posixpath
 import re
 from urllib.parse import urlsplit
 
-from instrproof.models import ClaimForm, InstructionSource, PathClaim, RepoPath
+from instrproof.models import (
+    ClaimForm,
+    InstructionSource,
+    PackageManager,
+    PackageScriptClaim,
+    PathClaim,
+    RepoPath,
+)
 
 
 _FENCE_OPEN = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
 _MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
 _INLINE_CODE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 _INLINE_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+")
+PNPM_SHORTHAND_EXCLUSIONS = frozenset(
+    {
+        "add",
+        "approve-builds",
+        "audit",
+        "bin",
+        "completion",
+        "config",
+        "create",
+        "deploy",
+        "dlx",
+        "env",
+        "exec",
+        "fetch",
+        "help",
+        "import",
+        "init",
+        "install",
+        "link",
+        "list",
+        "outdated",
+        "pack",
+        "patch",
+        "patch-commit",
+        "patch-remove",
+        "prune",
+        "publish",
+        "rebuild",
+        "remove",
+        "root",
+        "self-update",
+        "server",
+        "setup",
+        "store",
+        "unlink",
+        "update",
+        "view",
+        "why",
+    }
+)
+YARN_SHORTHAND_EXCLUSIONS = frozenset(
+    {
+        "add",
+        "bin",
+        "cache",
+        "completion",
+        "config",
+        "constraints",
+        "create",
+        "dedupe",
+        "dlx",
+        "exec",
+        "explain",
+        "help",
+        "info",
+        "init",
+        "install",
+        "link",
+        "npm",
+        "pack",
+        "patch",
+        "patch-commit",
+        "plugin",
+        "rebuild",
+        "remove",
+        "search",
+        "set",
+        "stage",
+        "unlink",
+        "unplug",
+        "up",
+        "upgrade",
+        "version",
+        "why",
+        "workspace",
+        "workspaces",
+    }
+)
+_PACKAGE_SCRIPT_COMMAND = re.compile(
+    r"(?P<prefix>^|[ \t\r\n`(\[{:])"
+    r"(?P<manager>npm|pnpm|yarn)[ \t]+"
+    r"(?:(?P<run>run)[ \t]+)?"
+    r"(?P<script>[A-Za-z0-9](?:[A-Za-z0-9._:/-]*[A-Za-z0-9_:/-])?)"
+    r"(?=$|[ \t\r\n`,)\]}!?.]|&&|\|\||;|\|)"
+)
 
 
 def _line_number(text: str, offset: int) -> int:
@@ -91,4 +183,33 @@ def extract_path_claims(source: InstructionSource) -> tuple[PathClaim, ...]:
                 PathClaim(source.path, ClaimForm.INLINE_PATH, written, target, _line_number(text, match.start()))
             )
 
+    return tuple(claims)
+
+
+def extract_package_script_claims(
+    source: InstructionSource,
+) -> tuple[PackageScriptClaim, ...]:
+    """Extract supported package-script command forms from one instruction."""
+    text = _mask_fenced_blocks(source.content)
+    claims: list[PackageScriptClaim] = []
+    for match in _PACKAGE_SCRIPT_COMMAND.finditer(text):
+        manager = PackageManager(match.group("manager"))
+        explicit_run = match.group("run") is not None
+        script = match.group("script")
+        if manager is PackageManager.NPM and not explicit_run:
+            continue
+        if not explicit_run and (
+            (manager is PackageManager.PNPM and script in PNPM_SHORTHAND_EXCLUSIONS)
+            or (manager is PackageManager.YARN and script in YARN_SHORTHAND_EXCLUSIONS)
+        ):
+            continue
+        claims.append(
+            PackageScriptClaim(
+                source.path,
+                manager,
+                text[match.start("manager") : match.end("script")],
+                script,
+                _line_number(text, match.start("manager")),
+            )
+        )
     return tuple(claims)

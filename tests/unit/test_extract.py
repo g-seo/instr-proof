@@ -1,7 +1,120 @@
-from instrproof.extract import extract_path_claims
+from instrproof.extract import (
+    PNPM_SHORTHAND_EXCLUSIONS,
+    YARN_SHORTHAND_EXCLUSIONS,
+    extract_package_script_claims,
+    extract_path_claims,
+)
 import pytest
 
 from instrproof.models import ClaimForm, InstructionSource, RepoPath
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("npm run typecheck", "typecheck"),
+        ("pnpm typecheck", "typecheck"),
+        ("pnpm run test:unit", "test:unit"),
+        ("yarn lint-fix", "lint-fix"),
+        ("yarn run build_2.docs/client", "build_2.docs/client"),
+    ],
+)
+def test_extracts_supported_package_script_forms(command: str, expected: str) -> None:
+    source = InstructionSource(RepoPath("AGENTS.md"), f"Run `{command}`.\n")
+    claims = extract_package_script_claims(source)
+
+    assert [(claim.package_manager.value, claim.normalized_target) for claim in claims] == [
+        (command.split()[0], expected)
+    ]
+    assert claims[0].line == 1
+
+
+@pytest.mark.parametrize("prefix", ["", " ", "\t", "\n", "`", "(", "[", "{", ":"])
+def test_package_command_allowed_start_boundaries(prefix: str) -> None:
+    suffix = "`" if prefix == "`" else "."
+    source = InstructionSource(RepoPath("AGENTS.md"), f"{prefix}pnpm typecheck{suffix}")
+    assert [c.normalized_target for c in extract_package_script_claims(source)] == [
+        "typecheck"
+    ]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["", " ", "\t", "\r", "\n", "`", ",", ")", "]", "}", "!", "?", ".", "&&next", "||next", ";next", "|next"],
+)
+def test_package_script_exact_termination_boundaries(suffix: str) -> None:
+    source = InstructionSource(RepoPath("AGENTS.md"), f"pnpm typecheck{suffix}")
+    assert [c.normalized_target for c in extract_package_script_claims(source)] == [
+        "typecheck"
+    ]
+
+
+def test_whitespace_and_operators_terminate_without_semantic_parsing() -> None:
+    source = InstructionSource(
+        RepoPath("AGENTS.md"),
+        "pnpm typecheck --watch && yarn test:unit || npm run lint; pnpm build | tool",
+    )
+    assert [c.normalized_target for c in extract_package_script_claims(source)] == [
+        "typecheck",
+        "test:unit",
+        "lint",
+        "build",
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "xpnpm typecheck",
+        "pnpm typecheck&next",
+        "pnpm typecheck@next",
+        "pnpm typecheck#next",
+        "pnpm typecheck=next",
+        "pnpm typecheck>next",
+        "pnpm typecheck<next",
+        'pnpm "typecheck"',
+        "npm typecheck",
+        "```sh\npnpm typecheck\n```",
+    ],
+)
+def test_rejects_invalid_package_command_boundaries(content: str) -> None:
+    source = InstructionSource(RepoPath("AGENTS.md"), content)
+    assert extract_package_script_claims(source) == ()
+
+
+def test_shorthand_exclusion_sets_are_exact_and_all_entries_are_rejected() -> None:
+    expected_pnpm = frozenset(
+        "add approve-builds audit bin completion config create deploy dlx env exec "
+        "fetch help import init install link list outdated pack patch patch-commit "
+        "patch-remove prune publish rebuild remove root self-update server setup store "
+        "unlink update view why".split()
+    )
+    expected_yarn = frozenset(
+        "add bin cache completion config constraints create dedupe dlx exec explain help "
+        "info init install link npm pack patch patch-commit plugin rebuild remove search "
+        "set stage unlink unplug up upgrade version why workspace workspaces".split()
+    )
+    assert PNPM_SHORTHAND_EXCLUSIONS == expected_pnpm
+    assert YARN_SHORTHAND_EXCLUSIONS == expected_yarn
+    for manager, exclusions in (
+        ("pnpm", expected_pnpm),
+        ("yarn", expected_yarn),
+    ):
+        source = InstructionSource(
+            RepoPath("AGENTS.md"),
+            "\n".join(f"{manager} {command}" for command in sorted(exclusions)),
+        )
+        assert extract_package_script_claims(source) == ()
+
+
+def test_explicit_run_bypasses_shorthand_exclusions() -> None:
+    source = InstructionSource(
+        RepoPath("AGENTS.md"), "pnpm run install\nyarn run add\n"
+    )
+    assert [c.normalized_target for c in extract_package_script_claims(source)] == [
+        "install",
+        "add",
+    ]
 
 
 def test_extracts_inline_path_relative_to_repository_root() -> None:

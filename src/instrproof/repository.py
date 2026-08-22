@@ -1,7 +1,8 @@
-"""Git-tree and working-tree evidence access."""
+"""Git-tree and working-tree evidence access for paths and root package scripts."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -20,6 +21,7 @@ class GitRepository:
     def __init__(self, root: Path) -> None:
         self.root = root
         self._base_path_cache: dict[str, frozenset[RepoPath]] = {}
+        self._base_package_script_cache: dict[str, frozenset[str]] = {}
 
     @classmethod
     def discover(cls, cwd: Path | None = None) -> GitRepository:
@@ -122,3 +124,43 @@ class GitRepository:
 
     def head_target_exists(self, path: RepoPath) -> bool:
         return os.path.lexists(self.root.joinpath(*path.value.split("/")))
+
+    @staticmethod
+    def _package_scripts(content: bytes, state: str) -> frozenset[str]:
+        try:
+            manifest = json.loads(content.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise RepositoryError(f"{state} package.json is not valid UTF-8") from exc
+        except json.JSONDecodeError as exc:
+            raise RepositoryError(f"{state} package.json is malformed JSON") from exc
+        if not isinstance(manifest, dict):
+            raise RepositoryError(f"{state} package.json root must be an object")
+        scripts = manifest.get("scripts", {})
+        if not isinstance(scripts, dict):
+            raise RepositoryError(f"{state} package.json scripts must be an object")
+        return frozenset(scripts)
+
+    def base_package_scripts(self, snapshot: str) -> frozenset[str]:
+        """Return exact root package script keys from a BASE Git tree."""
+        cached = self._base_package_script_cache.get(snapshot)
+        if cached is not None:
+            return cached
+        if not self.base_target_exists(snapshot, RepoPath("package.json")):
+            scripts = frozenset()
+        else:
+            scripts = self._package_scripts(
+                self._git("show", f"{snapshot}:package.json"), "BASE"
+            )
+        self._base_package_script_cache[snapshot] = scripts
+        return scripts
+
+    def head_package_scripts(self) -> frozenset[str]:
+        """Return exact root package script keys from the working tree."""
+        manifest = self.root / "package.json"
+        if not manifest.is_file():
+            return frozenset()
+        try:
+            content = manifest.read_bytes()
+        except OSError as exc:
+            raise RepositoryError("cannot read HEAD package.json") from exc
+        return self._package_scripts(content, "HEAD")
