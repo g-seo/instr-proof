@@ -127,11 +127,54 @@ class PathExistsContract:
     identity: ContractIdentity
     base_location: SourceLocation | None = field(default=None, compare=False)
 
+    @property
+    def source_location(self) -> SourceLocation | None:
+        return self.base_location
+
 
 @dataclass(frozen=True)
 class PackageScriptExistsContract:
     identity: ContractIdentity
     base_location: SourceLocation | None = field(default=None, compare=False)
+
+    @property
+    def source_location(self) -> SourceLocation | None:
+        return self.base_location
+
+
+Contract = PathExistsContract | PackageScriptExistsContract
+
+
+@dataclass(frozen=True)
+class CurrentOccurrence:
+    identity: ContractIdentity
+    source_location: SourceLocation
+    evidence_reference: str
+    evidence_state: EvidenceState
+
+    def __post_init__(self) -> None:
+        if self.source_location.source != self.identity.source:
+            raise ValueError("occurrence source must match contract identity")
+        if not self.evidence_reference:
+            raise ValueError("evidence reference cannot be empty")
+        if not isinstance(self.evidence_state, EvidenceState):
+            raise ValueError("unsupported current evidence state")
+
+
+@dataclass(frozen=True)
+class CurrentAnalysisResult:
+    occurrences: tuple[CurrentOccurrence, ...]
+    verified_contracts: tuple[Contract, ...]
+
+
+@dataclass(frozen=True)
+class SourceLocationSelector:
+    source: RepoPath
+    line: int
+
+    def __post_init__(self) -> None:
+        if self.line < 1:
+            raise ValueError("source line must be positive")
 
 
 @dataclass(frozen=True)

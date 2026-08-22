@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from instrproof.discovery import InstructionDiscoveryConfig
 from instrproof.extract import extract_package_script_claims, extract_path_claims
 from instrproof.models import (
     ComparisonResult,
     ContractIdentity,
     ContractType,
+    CurrentAnalysisResult,
+    CurrentOccurrence,
     EvidenceState,
     PackageScriptClaim,
     PackageScriptExistsContract,
@@ -17,6 +20,7 @@ from instrproof.models import (
     Regression,
     RepoPath,
     SourceLocation,
+    SourceLocationSelector,
 )
 from instrproof.repository import GitRepository
 
@@ -62,21 +66,133 @@ def _representative_claims(claims: Iterable[Claim]) -> dict[ContractIdentity, Cl
     return representatives
 
 
+def inspect_claim_occurrences(
+    claims: Iterable[Claim],
+    path_exists: PathExists,
+    script_exists: ScriptExists | None = None,
+) -> tuple[CurrentOccurrence, ...]:
+    """Inspect evidence once per identity while retaining diagnostic occurrences."""
+    grouped: dict[ContractIdentity, list[Claim]] = {}
+    for claim in claims:
+        grouped.setdefault(claim_identity(claim), []).append(claim)
+
+    inspected: list[CurrentOccurrence] = []
+    for identity in sorted(grouped):
+        identity_claims = grouped[identity]
+        representative = min(identity_claims, key=_claim_order)
+        if isinstance(representative, PathClaim):
+            exists = path_exists(representative.normalized_target)
+            evidence_reference = representative.normalized_target.value
+        else:
+            exists = script_exists is not None and script_exists(
+                representative.normalized_target
+            )
+            evidence_reference = f"package.json:scripts.{representative.normalized_target}"
+        state = EvidenceState.PRESENT if exists else EvidenceState.MISSING
+        for claim in sorted(identity_claims, key=_claim_order):
+            inspected.append(
+                CurrentOccurrence(
+                    identity,
+                    claim_location(claim),
+                    evidence_reference,
+                    state,
+                )
+            )
+    return tuple(inspected)
+
+
+def _promote_inspected(
+    occurrences: Iterable[CurrentOccurrence],
+) -> frozenset[Contract]:
+    representatives: dict[ContractIdentity, CurrentOccurrence] = {}
+    for occurrence in occurrences:
+        if occurrence.evidence_state is not EvidenceState.PRESENT:
+            continue
+        representatives.setdefault(occurrence.identity, occurrence)
+
+    promoted: set[Contract] = set()
+    for identity, occurrence in representatives.items():
+        if identity.contract_type is ContractType.PATH_EXISTS:
+            promoted.add(PathExistsContract(identity, occurrence.source_location))
+        else:
+            promoted.add(
+                PackageScriptExistsContract(identity, occurrence.source_location)
+            )
+    return frozenset(promoted)
+
+
 def promote_contracts(
     claims: Iterable[Claim],
     path_exists: PathExists,
     script_exists: ScriptExists | None = None,
 ) -> frozenset[Contract]:
     """Promote BASE claims whose type-specific evidence exists."""
-    promoted: set[Contract] = set()
-    for identity, claim in _representative_claims(claims).items():
-        location = claim_location(claim)
-        if isinstance(claim, PathClaim):
-            if path_exists(claim.normalized_target):
-                promoted.add(PathExistsContract(identity, location))
-        elif script_exists is not None and script_exists(claim.normalized_target):
-            promoted.add(PackageScriptExistsContract(identity, location))
-    return frozenset(promoted)
+    return _promote_inspected(
+        inspect_claim_occurrences(claims, path_exists, script_exists)
+    )
+
+
+def _current_claims(
+    repository: GitRepository, discovery_config: InstructionDiscoveryConfig
+) -> tuple[Claim, ...]:
+    return tuple(
+        claim
+        for source in repository.head_instruction_sources(discovery_config)
+        for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
+    )
+
+
+def analyze_current_repository(repository: GitRepository) -> CurrentAnalysisResult:
+    """Analyze supported claims and evidence in the current working tree."""
+    discovery_config = repository.instruction_discovery_config()
+    claims = _current_claims(repository, discovery_config)
+    scripts: frozenset[str] | None = None
+
+    def script_exists(name: str) -> bool:
+        nonlocal scripts
+        if scripts is None:
+            scripts = repository.head_package_scripts()
+        return name in scripts
+
+    occurrences = inspect_claim_occurrences(
+        claims, repository.head_target_exists, script_exists
+    )
+    contracts = tuple(
+        sorted(_promote_inspected(occurrences), key=lambda item: item.identity)
+    )
+    return CurrentAnalysisResult(occurrences, contracts)
+
+
+def parse_source_location_selector(value: str) -> SourceLocationSelector:
+    """Parse and normalize a repository-relative ``source:line`` selector."""
+    source_text, separator, line_text = value.rpartition(":")
+    if (
+        not separator
+        or not source_text
+        or not line_text.isascii()
+        or not line_text.isdecimal()
+    ):
+        raise ValueError("invalid source location; expected <source>:<positive-line>")
+    line = int(line_text)
+    if line < 1:
+        raise ValueError("invalid source location; line must be positive")
+    try:
+        source = RepoPath(source_text)
+    except ValueError as exc:
+        raise ValueError(f"invalid source location: {exc}") from exc
+    return SourceLocationSelector(source, line)
+
+
+def lookup_current_occurrences(
+    result: CurrentAnalysisResult, selector: SourceLocationSelector
+) -> tuple[CurrentOccurrence, ...]:
+    """Return every distinct supported identity at an exact diagnostic location."""
+    matches: dict[ContractIdentity, CurrentOccurrence] = {}
+    for occurrence in result.occurrences:
+        location = occurrence.source_location
+        if location.source == selector.source and location.line == selector.line:
+            matches.setdefault(occurrence.identity, occurrence)
+    return tuple(matches[identity] for identity in sorted(matches))
 
 
 def compare_contracts(
@@ -135,11 +251,7 @@ def compare_repository(repository: GitRepository, base_ref: str) -> ComparisonRe
         lambda path: repository.base_target_exists(snapshot, path),
         base_script_exists,
     )
-    head_claims: tuple[Claim, ...] = tuple(
-        claim
-        for source in repository.head_instruction_sources(discovery_config)
-        for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
-    )
+    head_claims = _current_claims(repository, discovery_config)
     head_scripts: frozenset[str] | None = None
 
     def head_script_exists(name: str) -> bool:

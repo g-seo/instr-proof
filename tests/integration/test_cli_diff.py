@@ -8,6 +8,20 @@ from instrproof.repository import GitRepository, RepositoryError
 from conftest import git
 
 
+def test_new_command_dispatch_does_not_change_diff_output(
+    committed_repo: Path, capsys
+) -> None:
+    assert main(["check"], cwd=committed_repo) == 0
+    capsys.readouterr()
+    assert main(["explain", "AGENTS.md:1"], cwd=committed_repo) == 0
+    capsys.readouterr()
+
+    assert main(["diff", "--base", "HEAD"], cwd=committed_repo) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "No instruction contract regressions found.\n"
+    assert captured.err == ""
+
+
 def commit_package_contract(repo: Path) -> None:
     (repo / "AGENTS.md").write_text("Run pnpm typecheck.\n", encoding="utf-8")
     (repo / "package.json").write_text(

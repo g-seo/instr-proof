@@ -19,7 +19,35 @@ The application has no runtime Python dependencies. Pytest is used for automated
 
 ## Usage
 
-Run the command from anywhere inside the repository to inspect:
+Run commands from anywhere inside the repository. To inspect contracts whose
+evidence exists in the current working tree:
+
+```sh
+uv run instrproof check
+```
+
+The output contains one deterministic row per contract identity, including its
+representative diagnostic source line, type, normalized target, and
+`current=present`, followed by an exact total. Claims with missing evidence and
+unsupported or ambiguous text are not listed. Finding zero verified contracts
+is successful.
+
+To inspect every supported contract occurrence at an exact source line:
+
+```sh
+uv run instrproof explain AGENTS.md:37
+uv run instrproof explain packages/auth/AGENTS.md:12
+```
+
+`explain` shows the source, type, normalized target, exact evidence reference,
+and a current state of `PRESENT` or `MISSING`. A missing occurrence remains
+explainable even though `check` does not verify it. Matching is exact against a
+normalized repository-relative source and positive line; all distinct matches
+on that line are shown in deterministic identity order. A valid location with
+no supported occurrence reports a clear no-match result and status `1`.
+
+These commands inspect only the current working tree and do not expose or infer
+BASE/HEAD comparison state. Regression detection remains:
 
 ```sh
 uv run instrproof diff --base origin/main
@@ -139,11 +167,13 @@ Source locations and evidence states are diagnostics only and never participate 
 
 | Status | Meaning |
 |--------|---------|
-| `0` | Comparison completed with no regressions. |
-| `1` | Comparison completed with one or more regressions. |
-| `2` | Arguments were invalid or repository inspection failed. |
+| `0` | Command completed successfully; for `check`, this includes zero contracts. |
+| `1` | `diff` found regressions, or `explain` found no occurrence at a valid location. |
+| `2` | Arguments were invalid or repository analysis failed. |
 
-Operational failures are written to stderr with an `error:` prefix and are never reported as a passing comparison.
+Operational failures are written to stderr with an `error:` prefix and are
+never represented as `MISSING` or a passing result. The existing `diff`
+arguments, output, regression semantics, and completion behavior are unchanged.
 
 ## Testing
 

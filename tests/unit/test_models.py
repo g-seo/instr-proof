@@ -3,13 +3,17 @@ import pytest
 from instrproof.models import (
     ContractIdentity,
     ContractType,
+    CurrentAnalysisResult,
+    CurrentOccurrence,
     EvidenceState,
     InstructionSource,
     PackageManager,
     PackageScriptClaim,
+    PathExistsContract,
     Regression,
     RepoPath,
     SourceLocation,
+    SourceLocationSelector,
 )
 
 
@@ -72,6 +76,61 @@ def test_source_location_and_evidence_are_diagnostic_values() -> None:
     assert location.line == 4
     assert EvidenceState.PRESENT.value == "present"
     assert EvidenceState.MISSING.value == "missing"
+
+
+def test_current_occurrence_reuses_identity_location_and_evidence_state() -> None:
+    identity = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PATH_EXISTS, "src/service.py"
+    )
+    occurrence = CurrentOccurrence(
+        identity,
+        SourceLocation(RepoPath("AGENTS.md"), 7, "src/service.py"),
+        "src/service.py",
+        EvidenceState.MISSING,
+    )
+
+    assert occurrence.identity is identity
+    assert occurrence.source_location.line == 7
+    assert occurrence.evidence_reference == "src/service.py"
+    assert occurrence.evidence_state is EvidenceState.MISSING
+
+
+def test_current_occurrence_rejects_mismatched_source() -> None:
+    identity = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PATH_EXISTS, "src/service.py"
+    )
+    with pytest.raises(ValueError, match="occurrence source"):
+        CurrentOccurrence(
+            identity,
+            SourceLocation(RepoPath("docs/AGENTS.md"), 1),
+            "src/service.py",
+            EvidenceState.PRESENT,
+        )
+
+
+def test_current_analysis_result_is_immutable_and_structured() -> None:
+    result = CurrentAnalysisResult((), ())
+    assert result.occurrences == ()
+    assert result.verified_contracts == ()
+
+
+def test_source_location_selector_requires_a_positive_line() -> None:
+    assert SourceLocationSelector(RepoPath("AGENTS.md"), 7).line == 7
+    with pytest.raises(ValueError, match="positive"):
+        SourceLocationSelector(RepoPath("AGENTS.md"), 0)
+
+
+def test_existing_contracts_expose_neutral_source_location_alias() -> None:
+    identity = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PATH_EXISTS, "src/service.py"
+    )
+    location = SourceLocation(RepoPath("AGENTS.md"), 2)
+    contract = PathExistsContract(identity, location)
+
+    assert contract.source_location is location
+    assert contract == PathExistsContract(
+        identity, SourceLocation(RepoPath("AGENTS.md"), 99)
+    )
 
 
 def test_regression_diagnostics_do_not_affect_equality_or_hashing() -> None:

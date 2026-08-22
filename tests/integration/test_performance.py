@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import platform
 from pathlib import Path
+import subprocess
+import sys
 from time import monotonic
 
 from instrproof.cli import main
@@ -45,10 +48,30 @@ def test_100_documents_and_1000_candidates_complete_within_five_seconds(
     git(git_repo, "add", ".")
     git(git_repo, "commit", "-qm", "performance fixture")
 
-    started = monotonic()
+    git_version = subprocess.run(
+        ["git", "--version"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    environment = (
+        f"python={sys.version.split()[0]}, platform={platform.platform()}, "
+        f"git={git_version}"
+    )
+
+    check_started = monotonic()
+    check_status = main(["check"], cwd=git_repo)
+    check_elapsed = monotonic() - check_started
+
+    assert check_status == 0
+    assert capsys.readouterr().out.startswith(
+        "Found 1000 verified instruction contracts:\n"
+    )
+    assert check_elapsed < 5.0, (
+        f"current inspection took {check_elapsed:.3f}s; {environment}"
+    )
+
+    diff_started = monotonic()
     status = main(["diff", "--base", "HEAD"], cwd=git_repo)
-    elapsed = monotonic() - started
+    diff_elapsed = monotonic() - diff_started
 
     assert status == 0
     assert capsys.readouterr().out == "No instruction contract regressions found.\n"
-    assert elapsed < 5.0, f"comparison took {elapsed:.3f}s"
+    assert diff_elapsed < 5.0, f"comparison took {diff_elapsed:.3f}s; {environment}"

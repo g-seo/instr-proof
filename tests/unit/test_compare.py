@@ -1,7 +1,20 @@
-from instrproof.compare import compare_contracts, promote_contracts
+import pytest
+
+from instrproof.compare import (
+    analyze_current_repository,
+    compare_contracts,
+    inspect_claim_occurrences,
+    lookup_current_occurrences,
+    parse_source_location_selector,
+    promote_contracts,
+)
 from instrproof.models import (
     ContractIdentity,
     ContractType,
+    CurrentAnalysisResult,
+    CurrentOccurrence,
+    EvidenceState,
+    InstructionSource,
     PackageManager,
     PackageScriptClaim,
     PackageScriptExistsContract,
@@ -244,3 +257,267 @@ def test_equivalent_normalized_targets_deduplicate() -> None:
 def test_nonexistent_base_targets_never_become_contracts() -> None:
     contracts = promote_contracts([claim(target="missing/file.py")], lambda _path: False)
     assert contracts == frozenset()
+
+
+def test_inspects_supported_path_occurrences_as_present_or_missing() -> None:
+    occurrences = inspect_claim_occurrences(
+        [claim(target="src/exists.py"), claim(target="src/missing.py")],
+        lambda path: path.value == "src/exists.py",
+    )
+
+    assert [(item.identity.target, item.evidence_state) for item in occurrences] == [
+        ("src/exists.py", EvidenceState.PRESENT),
+        ("src/missing.py", EvidenceState.MISSING),
+    ]
+    assert [item.evidence_reference for item in occurrences] == [
+        "src/exists.py",
+        "src/missing.py",
+    ]
+
+
+def test_inspects_package_script_occurrences_with_exact_evidence_reference() -> None:
+    occurrences = inspect_claim_occurrences(
+        [package_claim("typecheck"), package_claim("missing")],
+        lambda _path: False,
+        lambda name: name == "typecheck",
+    )
+
+    assert [(item.identity.target, item.evidence_state) for item in occurrences] == [
+        ("missing", EvidenceState.MISSING),
+        ("typecheck", EvidenceState.PRESENT),
+    ]
+    assert {item.evidence_reference for item in occurrences} == {
+        "package.json:scripts.typecheck",
+        "package.json:scripts.missing",
+    }
+
+
+def test_inspection_checks_evidence_once_per_identity_but_retains_occurrences() -> None:
+    calls: list[str] = []
+    first = claim(target="src/service.py")
+    moved = PathClaim(
+        first.source,
+        ClaimForm.MARKDOWN_LINK,
+        "src/./service.py",
+        RepoPath("src/./service.py"),
+        line=9,
+    )
+
+    def missing(path: RepoPath) -> bool:
+        calls.append(path.value)
+        return False
+
+    occurrences = inspect_claim_occurrences([moved, first], missing)
+
+    assert calls == ["src/service.py"]
+    assert [item.source_location.line for item in occurrences] == [4, 9]
+    assert all(item.evidence_state is EvidenceState.MISSING for item in occurrences)
+
+
+def test_inspection_is_lazy_for_package_scripts_when_none_are_present() -> None:
+    def unexpected(_name: str) -> bool:
+        raise AssertionError("script evidence must stay lazy")
+
+    assert inspect_claim_occurrences([claim()], lambda _path: True, unexpected)
+
+
+def test_inspection_propagates_evidence_failures() -> None:
+    def fail(_path: RepoPath) -> bool:
+        raise RuntimeError("repository failed")
+
+    with pytest.raises(RuntimeError, match="repository failed"):
+        inspect_claim_occurrences([claim()], fail)
+
+
+class CurrentRepositoryStub:
+    def __init__(
+        self,
+        sources: tuple[InstructionSource, ...],
+        paths: frozenset[RepoPath] = frozenset(),
+        scripts: frozenset[str] = frozenset(),
+    ) -> None:
+        self.sources = sources
+        self.paths = paths
+        self.scripts = scripts
+        self.script_reads = 0
+
+    def instruction_discovery_config(self):
+        return None
+
+    def head_instruction_sources(self, _config):
+        return self.sources
+
+    def head_target_exists(self, path: RepoPath) -> bool:
+        return path in self.paths
+
+    def head_package_scripts(self) -> frozenset[str]:
+        self.script_reads += 1
+        return self.scripts
+
+
+def test_analyze_current_repository_returns_present_contracts_and_all_occurrences() -> None:
+    repository = CurrentRepositoryStub(
+        (
+            InstructionSource(
+                RepoPath("AGENTS.md"),
+                "Use `src/service.py`.\nUse `src/service.py`.\nRun pnpm typecheck.\n",
+            ),
+            InstructionSource(
+                RepoPath("docs/AGENTS.md"), "Use `src/missing.py`.\n"
+            ),
+        ),
+        frozenset({RepoPath("src/service.py")}),
+        frozenset({"typecheck"}),
+    )
+
+    result = analyze_current_repository(repository)  # type: ignore[arg-type]
+
+    assert [item.identity.target for item in result.verified_contracts] == [
+        "typecheck",
+        "src/service.py",
+    ]
+    assert [item.source_location.line for item in result.occurrences] == [3, 1, 2, 1]
+    assert result.verified_contracts[1].source_location.line == 1
+    assert result.occurrences[-1].evidence_state is EvidenceState.MISSING
+    assert repository.script_reads == 1
+
+
+def test_analyze_current_repository_handles_zero_contracts_without_manifest_read() -> None:
+    repository = CurrentRepositoryStub(
+        (InstructionSource(RepoPath("AGENTS.md"), "General guidance only.\n"),)
+    )
+
+    result = analyze_current_repository(repository)  # type: ignore[arg-type]
+
+    assert result.occurrences == ()
+    assert result.verified_contracts == ()
+    assert repository.script_reads == 0
+
+
+def test_parse_source_location_selector_uses_final_colon_and_normalizes_path() -> None:
+    selector = parse_source_location_selector("docs/a:b/../AGENTS.md:37")
+    assert selector.source == RepoPath("docs/AGENTS.md")
+    assert selector.line == 37
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "AGENTS.md",
+        "AGENTS.md:",
+        "AGENTS.md:zero",
+        "AGENTS.md:0",
+        "/AGENTS.md:1",
+        "../AGENTS.md:1",
+    ],
+)
+def test_parse_source_location_selector_rejects_invalid_values(value: str) -> None:
+    with pytest.raises(ValueError, match="source location"):
+        parse_source_location_selector(value)
+
+
+def test_lookup_current_occurrences_matches_exact_source_and_line() -> None:
+    identity_path = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PATH_EXISTS, "src/service.py"
+    )
+    identity_script = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PACKAGE_SCRIPT_EXISTS, "typecheck"
+    )
+    occurrences = (
+        CurrentOccurrence(
+            identity_path,
+            SourceLocation(RepoPath("AGENTS.md"), 4),
+            "src/service.py",
+            EvidenceState.MISSING,
+        ),
+        CurrentOccurrence(
+            identity_script,
+            SourceLocation(RepoPath("AGENTS.md"), 4),
+            "package.json:scripts.typecheck",
+            EvidenceState.PRESENT,
+        ),
+        CurrentOccurrence(
+            identity_path,
+            SourceLocation(RepoPath("AGENTS.md"), 9),
+            "src/service.py",
+            EvidenceState.MISSING,
+        ),
+    )
+    result = CurrentAnalysisResult(occurrences, ())
+
+    matches = lookup_current_occurrences(
+        result, parse_source_location_selector("AGENTS.md:4")
+    )
+
+    assert [match.identity for match in matches] == [identity_script, identity_path]
+    assert [match.evidence_reference for match in matches] == [
+        "package.json:scripts.typecheck",
+        "src/service.py",
+    ]
+    assert lookup_current_occurrences(
+        result, parse_source_location_selector("docs/AGENTS.md:4")
+    ) == ()
+    assert lookup_current_occurrences(
+        result, parse_source_location_selector("AGENTS.md:8")
+    ) == ()
+
+
+def test_lookup_deduplicates_same_identity_at_requested_line() -> None:
+    identity = ContractIdentity(
+        RepoPath("AGENTS.md"), ContractType.PATH_EXISTS, "src/service.py"
+    )
+    occurrence = CurrentOccurrence(
+        identity,
+        SourceLocation(RepoPath("AGENTS.md"), 4),
+        "src/service.py",
+        EvidenceState.PRESENT,
+    )
+    result = CurrentAnalysisResult((occurrence, occurrence), ())
+
+    assert lookup_current_occurrences(
+        result, parse_source_location_selector("AGENTS.md:4")
+    ) == (occurrence,)
+
+
+def test_current_analysis_line_movement_changes_location_not_identity() -> None:
+    first = analyze_current_repository(
+        CurrentRepositoryStub(
+            (InstructionSource(RepoPath("AGENTS.md"), "Use `src/service.py`.\n"),),
+            frozenset({RepoPath("src/service.py")}),
+        )  # type: ignore[arg-type]
+    )
+    moved = analyze_current_repository(
+        CurrentRepositoryStub(
+            (
+                InstructionSource(
+                    RepoPath("AGENTS.md"), "Surrounding prose.\n\nUse `src/service.py`.\n"
+                ),
+            ),
+            frozenset({RepoPath("src/service.py")}),
+        )  # type: ignore[arg-type]
+    )
+
+    assert first.verified_contracts[0] == moved.verified_contracts[0]
+    assert hash(first.verified_contracts[0]) == hash(moved.verified_contracts[0])
+    assert first.verified_contracts[0].source_location.line == 1
+    assert moved.verified_contracts[0].source_location.line == 3
+
+
+def test_equal_current_targets_from_different_sources_remain_distinct() -> None:
+    result = analyze_current_repository(
+        CurrentRepositoryStub(
+            (
+                InstructionSource(RepoPath("AGENTS.md"), "Use `src/service.py`.\n"),
+                InstructionSource(
+                    RepoPath("docs/AGENTS.md"), "Use `src/service.py`.\n"
+                ),
+            ),
+            frozenset({RepoPath("src/service.py")}),
+        )  # type: ignore[arg-type]
+    )
+
+    assert len(result.verified_contracts) == 2
+    assert {item.identity.source.value for item in result.verified_contracts} == {
+        "AGENTS.md",
+        "docs/AGENTS.md",
+    }
