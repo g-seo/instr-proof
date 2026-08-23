@@ -55,6 +55,44 @@ uv run instrproof --help
 Pytest is used for automated tests, and Hatchling is used only to build the
 installable package.
 
+## Reproducible demo
+
+After installing Git and uv and synchronizing the project dependencies, run the
+complete public demonstration with one command:
+
+```sh
+./scripts/run-demo.sh
+```
+
+The demo creates a separate temporary Git repository and does not modify this
+InstrProof checkout. It verifies unchanged parent Git status plus the path,
+file type, complete-content digest, symlink target, and executable mode of every
+tracked and non-ignored untracked file. It first proves one instruction contract is valid, then
+moves the referenced source while ordinary application tests continue to pass.
+The stale instruction produces exactly one expected InstrProof CI regression
+and status `1`. Finally, the instruction is updated and the same `demo-base`
+comparison returns status `0`. The complete workflow runs offline after setup
+and is expected to finish within 30 seconds on supported Linux systems.
+
+Temporary state is removed by default. To retain the repaired repository:
+
+```sh
+./scripts/run-demo.sh --keep
+```
+
+The final `Retained demo repository: ...` line gives its absolute path. Inside
+that repository, inspect `git status`, `git log`, `AGENTS.md`, and the
+`demo-base` tag. To rerun the public checks, substitute the absolute InstrProof
+checkout path below:
+
+```sh
+uv run --offline --project /path/to/instr-proof instrproof check
+uv run --offline --project /path/to/instr-proof instrproof diff --base demo-base --ci
+```
+
+The retained directory is user-owned; remove only the displayed temporary
+directory when inspection is complete.
+
 ## Usage
 
 Run commands from anywhere inside the repository. To inspect contracts whose
