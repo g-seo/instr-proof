@@ -21,6 +21,15 @@ class RepositoryError(RuntimeError):
     """Raised when repository evidence cannot be inspected reliably."""
 
 
+class BaseReferenceError(RepositoryError):
+    """Raised when the exact requested BASE reference cannot be resolved."""
+
+    def __init__(self, requested_ref: str, detail: str) -> None:
+        self.requested_ref = requested_ref
+        self.detail = detail
+        super().__init__(detail)
+
+
 class GitRepository:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -61,8 +70,13 @@ class GitRepository:
 
     def resolve_base(self, ref: str) -> str:
         if not ref or "\x00" in ref:
-            raise RepositoryError("BASE ref is empty or invalid")
-        output = self._git("rev-parse", "--verify", "--end-of-options", f"{ref}^{{tree}}")
+            raise BaseReferenceError(ref, "BASE ref is empty or invalid")
+        try:
+            output = self._git(
+                "rev-parse", "--verify", "--end-of-options", f"{ref}^{{tree}}"
+            )
+        except RepositoryError as exc:
+            raise BaseReferenceError(ref, str(exc)) from exc
         return output.decode("ascii").strip()
 
     def instruction_discovery_config(self) -> InstructionDiscoveryConfig:

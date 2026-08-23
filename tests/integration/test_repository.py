@@ -4,7 +4,7 @@ import pytest
 
 from instrproof.models import RepoPath
 from instrproof.discovery import InstructionDiscoveryConfig
-from instrproof.repository import GitRepository, RepositoryError
+from instrproof.repository import BaseReferenceError, GitRepository, RepositoryError
 
 from conftest import git
 
@@ -140,6 +140,16 @@ def test_same_rules_discover_base_and_head_sources_independently(git_repo: Path)
 def test_invalid_base_is_explicit(committed_repo: Path) -> None:
     with pytest.raises(RepositoryError):
         GitRepository.discover(committed_repo).resolve_base("does-not-exist")
+
+
+def test_invalid_base_retains_exact_requested_reference(committed_repo: Path) -> None:
+    with pytest.raises(BaseReferenceError) as raised:
+        GitRepository.discover(committed_repo).resolve_base("origin/missing")
+
+    assert isinstance(raised.value, RepositoryError)
+    assert raised.value.requested_ref == "origin/missing"
+    assert raised.value.detail
+    assert str(raised.value) == raised.value.detail
 
 
 def test_non_repository_is_explicit(tmp_path: Path) -> None:

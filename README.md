@@ -163,13 +163,93 @@ PackageScriptExists  source=AGENTS.md:7  target=typecheck  base=present  head=mi
 
 Source locations and evidence states are diagnostics only and never participate in identity.
 
+## Continuous integration
+
+Use CI mode to run the same BASE/HEAD regression analysis with concise,
+deterministic build-log output:
+
+```sh
+instrproof diff --base origin/main --ci
+```
+
+`--ci` changes only presentation and process status. It does not change which
+contracts are selected or which repository changes count as regressions.
+
+A completed comparison with no regressions exits `0` and reports the number of
+baseline contracts checked:
+
+```text
+InstrProof ✓
+
+31 baseline contracts checked.
+No instruction contract regressions.
+```
+
+A completed comparison with regressions exits `1`, regardless of how many
+regressions were found. Every regression is printed once in deterministic
+source, contract-type, and target order:
+
+```text
+InstrProof ✗
+
+2 instruction contract regressions
+
+AGENTS.md:24
+PathExists(src/auth/service.ts)
+
+AGENTS.md:37
+PackageScriptExists(typecheck)
+```
+
+If analysis cannot complete, CI mode writes a concise `Analysis error:` message
+to stderr and exits `2`. Analysis errors are never presented as regressions.
+
+The exact BASE passed with `--base` must resolve in the local checkout.
+InstrProof does not fetch, guess, or substitute another revision. In particular,
+the default shallow checkout used by many CI systems may omit `origin/main`; in
+that case InstrProof exits `2` and asks you to make the requested reference
+available.
+
+### GitHub Actions
+
+This minimal pull-request workflow fetches sufficient history and explicitly
+creates the remote-tracking BASE used by InstrProof:
+
+```yaml
+name: InstrProof
+
+on:
+  pull_request:
+
+jobs:
+  instruction-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install InstrProof
+        run: python -m pip install instrproof
+      - name: Make BASE available
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - name: Check instruction contracts
+        run: instrproof diff --base origin/main --ci
+```
+
+Configure the `instruction-contracts` job as a required check. Exit `0` passes;
+exit `1` fails for confirmed instruction regressions; exit `2` fails because
+InstrProof could not perform the comparison.
+
 ## Exit statuses
 
 | Status | Meaning |
 |--------|---------|
-| `0` | Command completed successfully; for `check`, this includes zero contracts. |
-| `1` | `diff` found regressions, or `explain` found no occurrence at a valid location. |
-| `2` | Arguments were invalid or repository analysis failed. |
+| `0` | Command completed successfully; for `diff`, no regressions were found, and for `check`, this includes zero contracts. |
+| `1` | `diff` found one or more regressions, or `explain` found no occurrence at a valid location. |
+| `2` | Arguments were invalid or repository analysis could not complete. |
 
 Operational failures are written to stderr with an `error:` prefix and are
 never represented as `MISSING` or a passing result. The existing `diff`
