@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from collections.abc import Sequence
 
+from instrproof import __version__
 from instrproof.compare import (
     analyze_current_repository,
     compare_repository,
@@ -19,6 +20,11 @@ from instrproof.repository import BaseReferenceError, GitRepository, RepositoryE
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="instrproof")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     subcommands = parser.add_subparsers(dest="command", required=True)
     diff = subcommands.add_parser("diff", help="compare instruction contracts with a BASE ref")
     diff.add_argument("--base", required=True, metavar="BASE_REF")

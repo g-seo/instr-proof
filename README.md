@@ -8,14 +8,52 @@ InstrProof detects repository paths and package scripts in AI coding instruction
 - Git
 - [uv](https://docs.astral.sh/uv/)
 
-## Setup
+## Install from PyPI
 
 ```sh
-uv sync --dev
-uv run pytest
+python -m pip install instrproof
+instrproof --help
 ```
 
-The application has no runtime Python dependencies. Pytest is used for automated tests, and Hatchling is used only to build the installable package.
+PyPI installation requires Python 3.12 or newer. InstrProof has no runtime
+Python dependencies.
+
+## Install from GitHub
+
+Install the current source directly from the canonical repository:
+
+```sh
+python -m pip install "git+https://github.com/g-seo/instr-proof.git"
+instrproof --help
+```
+
+## Install a built artifact
+
+After running `uv build`, install the wheel by its local path:
+
+```sh
+python -m pip install dist/instrproof-*.whl
+instrproof --version
+```
+
+To validate the source distribution instead, use
+`python -m pip install dist/instrproof-*.tar.gz` in a separate clean virtual
+environment.
+
+## Local contributor installation
+
+Clone the repository and synchronize the locked development environment:
+
+```sh
+git clone https://github.com/g-seo/instr-proof.git
+cd instr-proof
+uv sync --locked --dev
+uv run pytest
+uv run instrproof --help
+```
+
+Pytest is used for automated tests, and Hatchling is used only to build the
+installable package.
 
 ## Usage
 
@@ -221,6 +259,9 @@ name: InstrProof
 on:
   pull_request:
 
+env:
+  INSTRPROOF_VERSION: "0.1.0"
+
 jobs:
   instruction-contracts:
     runs-on: ubuntu-latest
@@ -232,7 +273,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install InstrProof
-        run: python -m pip install instrproof
+        run: python -m pip install "instrproof==${INSTRPROOF_VERSION}"
       - name: Make BASE available
         run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - name: Check instruction contracts
@@ -254,6 +295,73 @@ InstrProof could not perform the comparison.
 Operational failures are written to stderr with an `error:` prefix and are
 never represented as `MISSING` or a passing result. The existing `diff`
 arguments, output, regression semantics, and completion behavior are unchanged.
+
+## Pre-release validation
+
+Maintainers can validate a release candidate locally with one fail-fast command:
+
+```sh
+./scripts/validate-release.sh
+```
+
+The command creates a clean locked Python 3.12 development environment, runs
+the complete test suite, builds one wheel and one source distribution, performs
+strict metadata and license inspection, installs each artifact separately, and
+compares their CLI versions, output, errors, and statuses. Temporary build and
+installation paths are removed when validation finishes.
+
+Locked development and build dependencies may be downloaded from configured package indexes.
+This procedure does not install or query a published InstrProof release,
+does not upload artifacts, and requires no production
+credentials. A successful run exits `0`; an unexpected test, build, metadata,
+installation, or behavior-comparison failure stops at its named phase and exits
+nonzero. The intentional regression fixture exits `1` and is treated as an
+expected command result.
+
+## Manual publication
+
+Publication is a separate maintainer action performed only after pre-release
+validation succeeds. Build fresh artifacts, inspect them, and upload manually:
+
+```sh
+uv sync --locked --dev
+uv build
+uv run twine check --strict dist/*
+uv run python scripts/inspect_artifacts.py dist
+uv run twine upload dist/*
+```
+
+PyPI accounts, credentials, and publishing policy are managed outside this
+repository. Project CI never runs the upload command.
+
+## Post-publication verification
+
+After manual publication, set the exact released version and verify production
+PyPI from a clean environment and neutral Git repository:
+
+```sh
+INSTRPROOF_VERSION="0.1.0"
+POST_RELEASE_DIR=$(mktemp -d)
+python -m venv "$POST_RELEASE_DIR/venv"
+. "$POST_RELEASE_DIR/venv/bin/activate"
+python -m pip install "instrproof==$INSTRPROOF_VERSION"
+mkdir -p "$POST_RELEASE_DIR/repository/src"
+printf 'value = 1\n' >"$POST_RELEASE_DIR/repository/src/app.py"
+printf 'Use `src/app.py`.\n' >"$POST_RELEASE_DIR/repository/AGENTS.md"
+git -C "$POST_RELEASE_DIR/repository" init
+git -C "$POST_RELEASE_DIR/repository" config user.name "InstrProof verification"
+git -C "$POST_RELEASE_DIR/repository" config user.email "verify@example.invalid"
+git -C "$POST_RELEASE_DIR/repository" add AGENTS.md src/app.py
+git -C "$POST_RELEASE_DIR/repository" commit -m "Create verification fixture"
+cd "$POST_RELEASE_DIR/repository"
+instrproof --help
+instrproof --version
+instrproof check
+instrproof diff --base HEAD
+```
+
+Confirm `instrproof --version` reports the selected exact version. This
+post-publication check is deliberately separate from local validation and CI.
 
 ## Testing
 

@@ -4,11 +4,32 @@ build-backend = "hatchling.build"
 
 [project]
 name = "instrproof"
-version = "0.1.0"
 description = "Detect broken repository paths in AI coding instructions"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "g-seo", email = "jiseo.jake@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dynamic = ["version"]
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/g-seo/instr-proof"
+Issues = "https://github.com/g-seo/instr-proof/issues"
 
 [project.scripts]
 instrproof = "instrproof.cli:main"
@@ -16,6 +37,23 @@ instrproof = "instrproof.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "twine>=6.1",
+]
+
+[tool.hatch.version]
+path = "src/instrproof/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/instrproof"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+    "/scripts",
+    "/src/instrproof",
+    "/tests",
 ]
 
 [tool.pytest.ini_options]
