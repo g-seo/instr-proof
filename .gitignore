@@ -9,7 +9,7 @@
 
 # AI / Spec Kit tooling
 .specify/
-AGENTS.md
+/AGENTS.md
 .agents/
 
 # Python

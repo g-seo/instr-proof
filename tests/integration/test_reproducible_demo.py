@@ -390,13 +390,15 @@ def test_interruption_is_nonzero_and_cleans_temporary_state(tmp_path: Path) -> N
     work.mkdir()
     real_uv = shutil.which("uv")
     assert real_uv is not None
+    ready = tmp_path / "uv-ready"
     add_path_wrapper(
         shim,
         "uv",
         f'''if [ "${{*: -2}}" = "instrproof check" ]; then
-    sleep 30
-fi
-exec "{real_uv}" "$@"''',
+        : > "{ready}"
+        sleep 30
+    fi
+    exec "{real_uv}" "$@"''',
     )
     env = shim_environment(shim)
     env.update({"TMPDIR": str(work), "UV_OFFLINE": "1"})
@@ -409,14 +411,19 @@ exec "{real_uv}" "$@"''',
         env=env,
         start_new_session=True,
     )
-    assert process.stdout is not None
-    seen = ""
-    while "$ instrproof check" not in seen:
-        line = process.stdout.readline()
-        assert line
-        seen += line
+    deadline = time.monotonic() + 10
+    while not ready.exists():
+        assert process.poll() is None
+        if time.monotonic() >= deadline:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise AssertionError("timed out waiting for the interrupt fixture")
+        time.sleep(0.01)
+
     os.killpg(process.pid, signal.SIGTERM)
     stdout, stderr = process.communicate(timeout=10)
+
+    assert "$ instrproof check" in stdout
     assert process.returncode != 0
     assert "interrupted" in stderr.lower() or process.returncode < 0
     assert_no_demo_directories(work)
