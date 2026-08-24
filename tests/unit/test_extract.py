@@ -1,6 +1,7 @@
 from instrproof.extract import (
     PNPM_SHORTHAND_EXCLUSIONS,
     YARN_SHORTHAND_EXCLUSIONS,
+    _is_supported_root_filename,
     extract_package_script_claims,
     extract_path_claims,
 )
@@ -125,6 +126,84 @@ def test_extracts_inline_path_relative_to_repository_root() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "README.md",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        ".pre-commit-config.yaml",
+        "Makefile",
+        "Dockerfile",
+        "Containerfile",
+        "Justfile",
+        "Procfile",
+        "LICENSE",
+        "NOTICE",
+    ],
+)
+def test_supports_root_level_inline_filenames(filename: str) -> None:
+    assert _is_supported_root_filename(filename)
+    source = InstructionSource(RepoPath("AGENTS.md"), f"Use `{filename}`.\n")
+
+    claims = extract_path_claims(source)
+
+    assert [(claim.form, claim.normalized_target.value) for claim in claims] == [
+        (ClaimForm.INLINE_PATH, filename)
+    ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "pytest",
+        "src",
+        "main",
+        "build",
+        "README",
+        "v1.0",
+        "python3.12",
+        "https://example.com/README.md",
+        "README.md#usage",
+        "README.md?raw=1",
+        "*.md",
+        "README?.md",
+        "${CONFIG}",
+        "${CONFIG}.json",
+        "$(config).json",
+        "$CONFIG.json",
+        "README.md;rm",
+        "path with spaces.md",
+        "/README.md",
+        "C:/README.md",
+        "dir\\README.md",
+        "README\x00.md",
+    ],
+)
+def test_rejects_unsupported_root_filename_shapes(value: str) -> None:
+    assert not _is_supported_root_filename(value)
+    source = InstructionSource(RepoPath("AGENTS.md"), f"Use `{value}`.\n")
+
+    assert extract_path_claims(source) == ()
+
+
+def test_root_filename_support_preserves_fences_nested_paths_and_markdown_links() -> None:
+    source = InstructionSource(
+        RepoPath("docs/AGENTS.md"),
+        "```md\nRead `README.md`.\n```\n"
+        "Use `src/app.py`.\n"
+        "Read [API](api.md).\n",
+    )
+
+    claims = extract_path_claims(source)
+
+    assert [(claim.form, claim.normalized_target.value) for claim in claims] == [
+        (ClaimForm.MARKDOWN_LINK, "docs/api.md"),
+        (ClaimForm.INLINE_PATH, "src/app.py"),
+    ]
+
+
 def test_extracts_markdown_link_relative_to_instruction_document() -> None:
     source = InstructionSource(RepoPath("docs/CLAUDE.md"), "Read [API](api.md).\n")
     claims = extract_path_claims(source)
@@ -156,7 +235,6 @@ def test_ignores_plain_path_like_prose() -> None:
         "```\n`src/example.py`\n```\n",
         "~~~md\n[API](api.md)\n~~~\n",
         "Plain src/example.py prose.\n",
-        "Use `service.py`.\n",
         "Use `src/path with spaces.py`.\n",
         "[External](https://example.com/api.md)\n",
         "[Network](//example.com/api.md)\n",

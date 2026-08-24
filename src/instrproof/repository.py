@@ -79,34 +79,55 @@ class GitRepository:
             raise BaseReferenceError(ref, str(exc)) from exc
         return output.decode("ascii").strip()
 
-    def instruction_discovery_config(self) -> InstructionDiscoveryConfig:
+    @staticmethod
+    def _instruction_discovery_config(
+        content: bytes, label: str
+    ) -> InstructionDiscoveryConfig:
+        try:
+            document = json.loads(content.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise RepositoryError(f"{label} is not valid UTF-8") from exc
+        except json.JSONDecodeError as exc:
+            raise RepositoryError(f"{label} is malformed JSON") from exc
+        if not isinstance(document, dict):
+            raise RepositoryError(f"{label} root must be an object")
+        unsupported = set(document) - {"instructions"}
+        if unsupported:
+            raise RepositoryError(f"{label} contains an unsupported key")
+        instructions = document.get("instructions", [])
+        if not isinstance(instructions, list):
+            raise RepositoryError(f"{label} instructions must be an array")
+        if any(not isinstance(value, str) for value in instructions):
+            raise RepositoryError(f"{label} instruction entries must be strings")
+        try:
+            return InstructionDiscoveryConfig.from_strings(instructions)
+        except ValueError as exc:
+            raise RepositoryError(
+                f"{label} has an invalid instruction rule: {exc}"
+            ) from exc
+
+    def head_instruction_discovery_config(self) -> InstructionDiscoveryConfig:
         config_path = self.root / CONFIG_NAME
         if not os.path.lexists(config_path):
             return InstructionDiscoveryConfig()
         try:
             content = config_path.read_bytes()
         except OSError as exc:
-            raise RepositoryError(f"cannot read {CONFIG_NAME}") from exc
-        try:
-            document = json.loads(content.decode("utf-8"))
-        except UnicodeDecodeError as exc:
-            raise RepositoryError(f"{CONFIG_NAME} is not valid UTF-8") from exc
-        except json.JSONDecodeError as exc:
-            raise RepositoryError(f"{CONFIG_NAME} is malformed JSON") from exc
-        if not isinstance(document, dict):
-            raise RepositoryError(f"{CONFIG_NAME} root must be an object")
-        unsupported = set(document) - {"instructions"}
-        if unsupported:
-            raise RepositoryError(f"{CONFIG_NAME} contains an unsupported key")
-        instructions = document.get("instructions", [])
-        if not isinstance(instructions, list):
-            raise RepositoryError(f"{CONFIG_NAME} instructions must be an array")
-        if any(not isinstance(value, str) for value in instructions):
-            raise RepositoryError(f"{CONFIG_NAME} instruction entries must be strings")
-        try:
-            return InstructionDiscoveryConfig.from_strings(instructions)
-        except ValueError as exc:
-            raise RepositoryError(f"{CONFIG_NAME} has an invalid instruction rule: {exc}") from exc
+            raise RepositoryError(f"cannot read HEAD {CONFIG_NAME}") from exc
+        return self._instruction_discovery_config(content, f"HEAD {CONFIG_NAME}")
+
+    def instruction_discovery_config(self) -> InstructionDiscoveryConfig:
+        """Return current discovery rules; retained for current-analysis compatibility."""
+        return self.head_instruction_discovery_config()
+
+    def base_instruction_discovery_config(
+        self, snapshot: str
+    ) -> InstructionDiscoveryConfig:
+        config_path = RepoPath(CONFIG_NAME)
+        if not self.base_target_exists(snapshot, config_path):
+            return InstructionDiscoveryConfig()
+        content = self._git("show", f"{snapshot}:{CONFIG_NAME}")
+        return self._instruction_discovery_config(content, f"BASE {CONFIG_NAME}")
 
     def base_instruction_sources(
         self,
@@ -150,7 +171,9 @@ class GitRepository:
         return True
 
     def head_instruction_sources(
-        self, config: InstructionDiscoveryConfig | None = None
+        self,
+        config: InstructionDiscoveryConfig | None = None,
+        retained_paths: tuple[RepoPath, ...] = (),
     ) -> tuple[InstructionSource, ...]:
         output = self._git("ls-files", "-z", "--cached", "--others", "--exclude-standard")
         paths: list[RepoPath] = []
@@ -164,8 +187,13 @@ class GitRepository:
             native = self.root.joinpath(*path.value.split("/"))
             if native.is_file():
                 paths.append(path)
+        selected = set(discover_instruction_paths(paths, config))
+        for path in retained_paths:
+            native = self.root.joinpath(*path.value.split("/"))
+            if native.is_file():
+                selected.add(path)
         sources = []
-        for path in discover_instruction_paths(paths, config):
+        for path in sorted(selected):
             native = self.root.joinpath(*path.value.split("/"))
             try:
                 content = native.read_text(encoding="utf-8")

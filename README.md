@@ -164,18 +164,36 @@ document is analyzed once per repository state. A valid rule matching no files
 is not an error. Malformed, invalid, or unreadable configuration is an explicit
 analysis error and returns status `2`.
 
-The current working-tree configuration is read once per invocation. The same
-rules discover sources independently from BASE and HEAD; neither state assumes
-the other's files exist. Discovery only includes files in repository-contract
-analysis and does not model any coding agent's loading, precedence, inheritance,
-or scope behavior.
+For `diff`, configuration is revision-owned repository state: BASE discovery
+reads `instrproof.json` from the exact resolved BASE tree, while normal HEAD
+discovery reads the current working-tree file. Absence in either state means no
+additional rules for that state. A rule added only in HEAD cannot create a
+retroactive BASE contract.
+
+Comparison also inspects the readable working-tree version of every source path
+discovered in BASE. Therefore removing a custom rule in HEAD cannot hide a
+surviving stale claim from that source. Updating or removing the claim, or
+removing the source file, retains the existing coordinated-update and
+instruction-removal behavior. Default `AGENTS.md` and `CLAUDE.md` discovery
+still applies independently in both states, and overlapping selections are
+normalized, deduplicated, and analyzed once. `check` and `explain` remain
+current-only and use only working-tree configuration. Discovery does not model
+any coding agent's loading, precedence, inheritance, or scope behavior.
 
 ## Supported instruction contracts
 
 InstrProof recognizes two deliberately narrow forms in every discovered source:
 
 - Repository-root-relative paths in inline code, such as `` `src/auth/service.py` ``.
+- Supported repository-root filenames in inline code, such as `` `README.md` ``,
+  `` `Cargo.toml` ``, `` `package.json` ``, and `` `.pre-commit-config.yaml` ``.
 - Local Markdown links, such as `[API](api.md)`, resolved relative to the instruction document containing the link.
+
+An extension-bearing root filename is considered only when its final extension
+begins with an ASCII letter. The exact supported extensionless root filenames
+are `Makefile`, `Dockerfile`, `Containerfile`, `Justfile`, `Procfile`, `LICENSE`,
+and `NOTICE`. Matching is case-sensitive. As with nested paths, a lexical
+candidate becomes a contract only when its exact path exists in BASE.
 
 Targets are normalized to repository-relative `/`-separated paths. Candidates that escape the repository, use absolute or external destinations, occur only in arbitrary prose or fenced code, or do not exist in BASE are not monitored. This precision boundary is deterministic and uses no LLM.
 

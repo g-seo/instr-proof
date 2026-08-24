@@ -66,6 +66,25 @@ def test_ci_reports_one_path_regression(committed_repo: Path, capsys) -> None:
     assert captured.err == ""
 
 
+def test_ci_reports_one_root_filename_regression(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    target = git_repo / "README.md"
+    target.write_text("# Project\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "root filename base")
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD", "--ci"], cwd=git_repo) == 1
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "InstrProof ✗\n\n"
+        "1 instruction contract regression\n\n"
+        "AGENTS.md:1\n"
+        "PathExists(README.md)\n"
+    )
+    assert captured.err == ""
+
+
 def test_ci_reports_one_package_script_regression(git_repo: Path, capsys) -> None:
     commit_package_contract(git_repo)
     (git_repo / "package.json").write_text('{"scripts":{}}\n', encoding="utf-8")
@@ -278,6 +297,29 @@ def test_ci_malformed_required_data_is_an_analysis_error(
         "Analysis error: HEAD package.json is malformed JSON\n"
     )
     assert "instruction contract regression" not in captured.err
+
+
+@pytest.mark.parametrize("state", ["BASE", "HEAD"])
+def test_ci_configuration_errors_are_attributable(
+    git_repo: Path, capsys, state: str
+) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        "{" if state == "BASE" else "{}\n", encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "configuration base")
+    if state == "HEAD":
+        (git_repo / "instrproof.json").write_text("{", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD", "--ci"], cwd=git_repo) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\n"
+        f"Analysis error: {state} instrproof.json is malformed JSON\n"
+    )
 
 
 def test_ci_repository_failure_is_not_a_partial_regression_result(

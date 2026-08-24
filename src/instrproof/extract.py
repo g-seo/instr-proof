@@ -20,6 +20,19 @@ _FENCE_OPEN = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
 _MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
 _INLINE_CODE = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 _INLINE_PATH = re.compile(r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+")
+_ROOT_FILENAME_CHARACTERS = re.compile(r"[A-Za-z0-9._-]+")
+_ROOT_EXTENSION = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+SUPPORTED_EXTENSIONLESS_ROOT_FILENAMES = frozenset(
+    {
+        "Makefile",
+        "Dockerfile",
+        "Containerfile",
+        "Justfile",
+        "Procfile",
+        "LICENSE",
+        "NOTICE",
+    }
+)
 PNPM_SHORTHAND_EXCLUSIONS = frozenset(
     {
         "add",
@@ -111,6 +124,20 @@ def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
+def _is_supported_root_filename(value: str) -> bool:
+    """Return whether one inline token has the supported root-file shape."""
+    if value in SUPPORTED_EXTENSIONLESS_ROOT_FILENAMES:
+        return True
+    if _ROOT_FILENAME_CHARACTERS.fullmatch(value) is None:
+        return False
+    stem, separator, extension = value.rpartition(".")
+    return bool(stem and separator and _ROOT_EXTENSION.fullmatch(extension))
+
+
+def _is_supported_inline_path(value: str) -> bool:
+    return _INLINE_PATH.fullmatch(value) is not None or _is_supported_root_filename(value)
+
+
 def _mask_fenced_blocks(text: str) -> str:
     """Mask fenced blocks while preserving offsets and line numbers."""
     masked: list[str] = []
@@ -175,7 +202,7 @@ def extract_path_claims(source: InstructionSource) -> tuple[PathClaim, ...]:
 
     for match in _INLINE_CODE.finditer(text):
         written = match.group(1)
-        if _INLINE_PATH.fullmatch(written) is None:
+        if not _is_supported_inline_path(written):
             continue
         target = _resolve(written, source.path, markdown=False)
         if target is not None:

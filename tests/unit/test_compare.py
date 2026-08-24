@@ -3,11 +3,13 @@ import pytest
 from instrproof.compare import (
     analyze_current_repository,
     compare_contracts,
+    compare_repository,
     inspect_claim_occurrences,
     lookup_current_occurrences,
     parse_source_location_selector,
     promote_contracts,
 )
+from instrproof.extract import extract_path_claims
 from instrproof.models import (
     ContractIdentity,
     ContractType,
@@ -195,6 +197,45 @@ def test_promotes_only_claims_with_base_evidence() -> None:
     assert {contract.identity.target for contract in contracts} == {"src/exists.py"}
 
 
+def test_root_filename_promotion_requires_exact_case_sensitive_base_evidence() -> None:
+    claims = [
+        claim(target="README.md"),
+        claim(target="output.json"),
+        claim(target="Makefile"),
+    ]
+
+    contracts = promote_contracts(
+        claims,
+        lambda path: path.value in {"README.md", "Makefile", "readme.md"},
+    )
+
+    assert {contract.identity.target for contract in contracts} == {
+        "Makefile",
+        "README.md",
+    }
+
+
+def test_differently_cased_root_evidence_does_not_promote_claim() -> None:
+    contracts = promote_contracts(
+        [claim(target="README.md")], lambda path: path.value == "readme.md"
+    )
+
+    assert contracts == frozenset()
+
+
+def test_repository_evidence_cannot_promote_unsupported_root_tokens() -> None:
+    source = InstructionSource(
+        RepoPath("AGENTS.md"),
+        "Use `pytest`, `src`, `v1.0`, `*.md`, and `${CONFIG}`.\n",
+    )
+    claims = extract_path_claims(source)
+
+    contracts = promote_contracts(claims, lambda _path: True)
+
+    assert claims == ()
+    assert contracts == frozenset()
+
+
 def test_existing_head_target_passes() -> None:
     baseline = promote_contracts([claim()], lambda _path: True)
     result = compare_contracts(baseline, [claim()], lambda _path: True)
@@ -341,10 +382,10 @@ class CurrentRepositoryStub:
         self.scripts = scripts
         self.script_reads = 0
 
-    def instruction_discovery_config(self):
+    def head_instruction_discovery_config(self):
         return None
 
-    def head_instruction_sources(self, _config):
+    def head_instruction_sources(self, _config, _retained_paths=()):
         return self.sources
 
     def head_target_exists(self, path: RepoPath) -> bool:
@@ -353,6 +394,52 @@ class CurrentRepositoryStub:
     def head_package_scripts(self) -> frozenset[str]:
         self.script_reads += 1
         return self.scripts
+
+
+class ComparisonRepositoryStub:
+    def __init__(self) -> None:
+        self.head_source_calls = 0
+        self.retained_paths: tuple[RepoPath, ...] = ()
+        self.source = InstructionSource(RepoPath("docs/rules.md"), "Use `README.md`.\n")
+
+    def resolve_base(self, _ref: str) -> str:
+        return "snapshot"
+
+    def base_instruction_discovery_config(self, _snapshot: str):
+        return None
+
+    def base_instruction_sources(self, _snapshot: str, _config):
+        return (self.source,)
+
+    def base_target_exists(self, _snapshot: str, path: RepoPath) -> bool:
+        return path == RepoPath("README.md")
+
+    def base_package_scripts(self, _snapshot: str) -> frozenset[str]:
+        return frozenset()
+
+    def head_instruction_discovery_config(self):
+        return None
+
+    def head_instruction_sources(self, _config, retained_paths=()):
+        self.head_source_calls += 1
+        self.retained_paths = retained_paths
+        return (self.source,)
+
+    def head_target_exists(self, _path: RepoPath) -> bool:
+        return False
+
+    def head_package_scripts(self) -> frozenset[str]:
+        return frozenset()
+
+
+def test_compare_repository_carries_base_paths_and_loads_head_sources_once() -> None:
+    repository = ComparisonRepositoryStub()
+
+    result = compare_repository(repository, "HEAD")  # type: ignore[arg-type]
+
+    assert repository.head_source_calls == 1
+    assert repository.retained_paths == (RepoPath("docs/rules.md"),)
+    assert [item.identity.target for item in result.regressions] == ["README.md"]
 
 
 def test_analyze_current_repository_returns_present_contracts_and_all_occurrences() -> None:

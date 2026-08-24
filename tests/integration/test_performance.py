@@ -75,3 +75,13 @@ def test_100_documents_and_1000_candidates_complete_within_five_seconds(
     assert status == 0
     assert capsys.readouterr().out == "No instruction contract regressions found.\n"
     assert diff_elapsed < 5.0, f"comparison took {diff_elapsed:.3f}s; {environment}"
+
+    repeated_started = monotonic()
+    repeated_status = main(["diff", "--base", "HEAD"], cwd=git_repo)
+    repeated_elapsed = monotonic() - repeated_started
+
+    assert repeated_status == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+    assert repeated_elapsed < 5.0, (
+        f"repeated comparison took {repeated_elapsed:.3f}s; {environment}"
+    )

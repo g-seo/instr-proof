@@ -90,7 +90,107 @@ def test_malformed_configuration_is_cli_error(git_repo: Path, capsys) -> None:
     assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "error: instrproof.json is malformed JSON\n"
+    assert captured.err == "error: BASE instrproof.json is malformed JSON\n"
+
+
+def test_malformed_head_configuration_is_cli_error(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text("{}\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "valid base config")
+    (git_repo / "instrproof.json").write_text("{", encoding="utf-8")
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: HEAD instrproof.json is malformed JSON\n"
+
+
+def commit_custom_instruction_contract(repo: Path) -> Path:
+    source = repo / "docs" / "ai-rules.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("Use `src/service.py`.\n", encoding="utf-8")
+    target = repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    (repo / "instrproof.json").write_text(
+        '{"instructions":["docs/ai-rules.md"]}\n', encoding="utf-8"
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "custom instruction base")
+    return target
+
+
+def test_removed_head_rule_cannot_hide_surviving_stale_claim(
+    git_repo: Path, capsys
+) -> None:
+    target = commit_custom_instruction_contract(git_repo)
+    (git_repo / "instrproof.json").write_text('{"instructions":[]}\n', encoding="utf-8")
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    assert "source=docs/ai-rules.md:1  target=src/service.py" in capsys.readouterr().out
+
+
+def test_deleted_head_config_cannot_hide_surviving_stale_claim(
+    git_repo: Path, capsys
+) -> None:
+    target = commit_custom_instruction_contract(git_repo)
+    (git_repo / "instrproof.json").unlink()
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Found 1 instruction contract regression:\n"
+        "PathExists  source=docs/ai-rules.md:1  target=src/service.py  "
+        "base=present  head=missing\n"
+    )
+    assert captured.err == ""
+
+
+def test_removed_head_rule_with_repaired_claim_passes(git_repo: Path, capsys) -> None:
+    target = commit_custom_instruction_contract(git_repo)
+    (git_repo / "instrproof.json").write_text('{"instructions":[]}\n', encoding="utf-8")
+    target.unlink()
+    replacement = git_repo / "src" / "replacement.py"
+    replacement.write_text("replacement\n", encoding="utf-8")
+    (git_repo / "docs" / "ai-rules.md").write_text(
+        "Use `src/replacement.py`.\n", encoding="utf-8"
+    )
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_removed_head_rule_and_source_preserves_removal_pass(
+    git_repo: Path, capsys
+) -> None:
+    target = commit_custom_instruction_contract(git_repo)
+    (git_repo / "instrproof.json").unlink()
+    (git_repo / "docs" / "ai-rules.md").unlink()
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+
+
+def test_head_only_rule_does_not_create_retroactive_contract(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base without custom rule")
+    source = git_repo / "docs" / "new-rules.md"
+    source.parent.mkdir()
+    source.write_text("Use `missing.json`.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/new-rules.md"]}\n', encoding="utf-8"
+    )
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
 
 
 def test_configured_nested_source_preserves_both_path_resolution_bases(
@@ -400,6 +500,42 @@ def test_reports_removed_inline_target(committed_repo: Path, capsys) -> None:
         "base=present  head=missing\n"
     )
     assert captured.err == ""
+
+
+def test_reports_removed_root_filename_target(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    target = git_repo / "README.md"
+    target.write_text("# Project\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "root filename base")
+    target.unlink()
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 1
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "Found 1 instruction contract regression:\n"
+        "PathExists  source=AGENTS.md:1  target=README.md  "
+        "base=present  head=missing\n"
+    )
+    assert captured.err == ""
+
+
+def test_coordinated_root_filename_claim_update_passes(git_repo: Path, capsys) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    old = git_repo / "README.md"
+    old.write_text("# Project\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "root filename base")
+
+    old.unlink()
+    replacement = git_repo / "CONTRIBUTING.md"
+    replacement.write_text("# Contributing\n", encoding="utf-8")
+    (git_repo / "AGENTS.md").write_text(
+        "Read `CONTRIBUTING.md`.\n", encoding="utf-8"
+    )
+
+    assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
 
 
 def test_reports_removed_nested_markdown_target(git_repo: Path, capsys) -> None:

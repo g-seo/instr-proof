@@ -133,18 +133,22 @@ def promote_contracts(
 
 
 def _current_claims(
-    repository: GitRepository, discovery_config: InstructionDiscoveryConfig
+    repository: GitRepository,
+    discovery_config: InstructionDiscoveryConfig,
+    retained_paths: tuple[RepoPath, ...] = (),
 ) -> tuple[Claim, ...]:
     return tuple(
         claim
-        for source in repository.head_instruction_sources(discovery_config)
+        for source in repository.head_instruction_sources(
+            discovery_config, retained_paths
+        )
         for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
     )
 
 
 def analyze_current_repository(repository: GitRepository) -> CurrentAnalysisResult:
     """Analyze supported claims and evidence in the current working tree."""
-    discovery_config = repository.instruction_discovery_config()
+    discovery_config = repository.head_instruction_discovery_config()
     claims = _current_claims(repository, discovery_config)
     scripts: frozenset[str] | None = None
 
@@ -232,10 +236,11 @@ def compare_contracts(
 def compare_repository(repository: GitRepository, base_ref: str) -> ComparisonResult:
     """Run the shared typed-contract pipeline for BASE and working-tree HEAD."""
     snapshot = repository.resolve_base(base_ref)
-    discovery_config = repository.instruction_discovery_config()
+    base_config = repository.base_instruction_discovery_config(snapshot)
+    base_sources = repository.base_instruction_sources(snapshot, base_config)
     base_claims: tuple[Claim, ...] = tuple(
         claim
-        for source in repository.base_instruction_sources(snapshot, discovery_config)
+        for source in base_sources
         for claim in (*extract_path_claims(source), *extract_package_script_claims(source))
     )
     base_scripts: frozenset[str] | None = None
@@ -251,7 +256,9 @@ def compare_repository(repository: GitRepository, base_ref: str) -> ComparisonRe
         lambda path: repository.base_target_exists(snapshot, path),
         base_script_exists,
     )
-    head_claims = _current_claims(repository, discovery_config)
+    head_config = repository.head_instruction_discovery_config()
+    retained_paths = tuple(source.path for source in base_sources)
+    head_claims = _current_claims(repository, head_config, retained_paths)
     head_scripts: frozenset[str] | None = None
 
     def head_script_exists(name: str) -> bool:

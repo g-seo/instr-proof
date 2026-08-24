@@ -2,6 +2,8 @@ from pathlib import Path
 
 from instrproof.cli import main
 
+from conftest import git
+
 
 def test_check_lists_present_contracts_across_discovered_sources(
     git_repo: Path, capsys
@@ -61,6 +63,28 @@ def test_check_zero_contracts_is_success(git_repo: Path, capsys) -> None:
 
     assert main(["check"], cwd=git_repo) == 0
     assert capsys.readouterr().out == "Found 0 verified instruction contracts.\n"
+
+
+def test_check_and_explain_use_only_current_head_discovery_rules(
+    git_repo: Path, capsys
+) -> None:
+    source = git_repo / "docs" / "historical.md"
+    source.parent.mkdir()
+    source.write_text("Read `README.md`.\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("present\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/historical.md"]}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "historical selection")
+    (git_repo / "instrproof.json").write_text('{"instructions":[]}\n', encoding="utf-8")
+
+    assert main(["check"], cwd=git_repo) == 0
+    assert capsys.readouterr().out == "Found 0 verified instruction contracts.\n"
+    assert main(["explain", "docs/historical.md:1"], cwd=git_repo) == 1
+    assert capsys.readouterr().out == (
+        "No supported instruction contract at docs/historical.md:1.\n"
+    )
 
 
 def test_check_reports_required_manifest_analysis_error(git_repo: Path, capsys) -> None:

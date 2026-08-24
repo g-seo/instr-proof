@@ -88,11 +88,11 @@ def test_invalid_discovery_configuration_is_explicit(
 ) -> None:
     (git_repo / "instrproof.json").write_bytes(content)
     with pytest.raises(RepositoryError, match=message):
-        GitRepository.discover(git_repo).instruction_discovery_config()
+        GitRepository.discover(git_repo).head_instruction_discovery_config()
 
 
 def test_absent_configuration_has_no_additional_rules(git_repo: Path) -> None:
-    assert GitRepository.discover(git_repo).instruction_discovery_config() == InstructionDiscoveryConfig()
+    assert GitRepository.discover(git_repo).head_instruction_discovery_config() == InstructionDiscoveryConfig()
 
 
 def test_unreadable_discovery_configuration_is_explicit(
@@ -108,8 +108,105 @@ def test_unreadable_discovery_configuration_is_explicit(
         return original(path)
 
     monkeypatch.setattr(Path, "read_bytes", fail)
-    with pytest.raises(RepositoryError, match="cannot read instrproof.json"):
-        GitRepository.discover(git_repo).instruction_discovery_config()
+    with pytest.raises(RepositoryError, match="cannot read HEAD instrproof.json"):
+        GitRepository.discover(git_repo).head_instruction_discovery_config()
+
+
+def test_base_and_head_discovery_configurations_are_independent(git_repo: Path) -> None:
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/base.md"]}\n', encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base config")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+    status_before = git(git_repo, "status", "--short")
+
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/head.md"]}\n', encoding="utf-8"
+    )
+
+    base = repository.base_instruction_discovery_config(snapshot)
+    head = repository.head_instruction_discovery_config()
+
+    assert [rule.normalized for rule in base.additional_rules] == ["docs/base.md"]
+    assert [rule.normalized for rule in head.additional_rules] == ["docs/head.md"]
+    assert status_before == ""
+    assert git(git_repo, "status", "--short") == "M instrproof.json"
+
+
+def test_absent_base_config_uses_defaults_when_head_adds_config(git_repo: Path) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "base without config")
+    repository = GitRepository.discover(git_repo)
+    snapshot = repository.resolve_base("HEAD")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/head.md"]}\n', encoding="utf-8"
+    )
+
+    assert repository.base_instruction_discovery_config(snapshot) == InstructionDiscoveryConfig()
+    assert repository.head_instruction_discovery_config() != InstructionDiscoveryConfig()
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (b"\xff", "BASE instrproof.json is not valid UTF-8"),
+        (b"{", "BASE instrproof.json is malformed JSON"),
+        (b"[]", "BASE instrproof.json root must be an object"),
+        (b'{"unknown":[]}', "BASE instrproof.json contains an unsupported key"),
+        (
+            b'{"instructions":{}}',
+            "BASE instrproof.json instructions must be an array",
+        ),
+        (
+            b'{"instructions":[1]}',
+            "BASE instrproof.json instruction entries must be strings",
+        ),
+        (b'{"instructions":["../outside.md"]}', "BASE instrproof.json has an invalid instruction rule"),
+    ],
+)
+def test_invalid_base_discovery_configuration_is_attributable(
+    git_repo: Path, content: bytes, message: str
+) -> None:
+    (git_repo / "instrproof.json").write_bytes(content)
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "invalid base config")
+    repository = GitRepository.discover(git_repo)
+
+    with pytest.raises(RepositoryError, match=message):
+        repository.base_instruction_discovery_config(repository.resolve_base("HEAD"))
+
+
+def test_retained_head_sources_are_sorted_deduplicated_and_loaded_once(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = git_repo / "docs" / "rules.md"
+    source.parent.mkdir()
+    source.write_text("Use `README.md`.\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        '{"instructions":["docs/*.md","docs/rules.md"]}\n', encoding="utf-8"
+    )
+    reads = 0
+    original = Path.read_text
+
+    def count_reads(path: Path, *args, **kwargs):
+        nonlocal reads
+        if path == source:
+            reads += 1
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", count_reads)
+    repository = GitRepository.discover(git_repo)
+    retained = (RepoPath("docs/rules.md"), RepoPath("docs/rules.md"))
+
+    sources = repository.head_instruction_sources(
+        repository.head_instruction_discovery_config(), retained
+    )
+
+    assert [item.path.value for item in sources] == ["docs/rules.md"]
+    assert reads == 1
 
 
 def test_same_rules_discover_base_and_head_sources_independently(git_repo: Path) -> None:
@@ -135,6 +232,27 @@ def test_same_rules_discover_base_and_head_sources_independently(git_repo: Path)
     assert [
         source.path.value for source in repository.head_instruction_sources(config)
     ] == ["docs/head.md"]
+
+
+def test_head_discovery_reads_tracked_modifications_and_nonignored_untracked_sources(
+    git_repo: Path,
+) -> None:
+    tracked = git_repo / "AGENTS.md"
+    tracked.write_text("Committed instructions.\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "tracked instructions")
+
+    tracked.write_text("Modified instructions.\n", encoding="utf-8")
+    untracked = git_repo / "docs" / "CLAUDE.md"
+    untracked.parent.mkdir()
+    untracked.write_text("Untracked instructions.\n", encoding="utf-8")
+
+    sources = GitRepository.discover(git_repo).head_instruction_sources()
+
+    assert [(source.path.value, source.content) for source in sources] == [
+        ("AGENTS.md", "Modified instructions.\n"),
+        ("docs/CLAUDE.md", "Untracked instructions.\n"),
+    ]
 
 
 def test_invalid_base_is_explicit(committed_repo: Path) -> None:
