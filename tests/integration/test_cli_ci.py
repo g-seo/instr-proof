@@ -39,6 +39,25 @@ def test_ci_pass_reports_zero_baseline_contracts(git_repo: Path, capsys) -> None
     assert captured.err == ""
 
 
+def test_ci_require_contracts_rejects_zero_baseline_contracts(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "empty contract base")
+
+    assert main(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\n"
+        "Analysis error: no baseline instruction contracts were found. Verify "
+        "instruction discovery, supported claim syntax, and BASE evidence.\n"
+    )
+
+
 def test_ci_pass_reports_nonzero_baseline_contracts(
     committed_repo: Path, capsys
 ) -> None:
@@ -50,6 +69,54 @@ def test_ci_pass_reports_nonzero_baseline_contracts(
         "No instruction contract regressions.\n"
     )
     assert captured.err == ""
+
+
+@pytest.mark.parametrize("regression", [False, True])
+def test_ci_require_contracts_preserves_nonzero_results(
+    committed_repo: Path, capsys, regression: bool
+) -> None:
+    if regression:
+        (committed_repo / "src" / "auth" / "service.py").unlink()
+
+    expected_status = main(["diff", "--base", "HEAD", "--ci"], cwd=committed_repo)
+    expected = capsys.readouterr()
+
+    assert main(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"],
+        cwd=committed_repo,
+    ) == expected_status
+    actual = capsys.readouterr()
+    assert actual.out == expected.out
+    assert actual.err == expected.err == ""
+
+
+def test_ci_require_contracts_reports_deterministic_multiple_contract_count(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "AGENTS.md").write_text(
+        "Use `src/one.py`.\nUse `src/two.py`.\n", encoding="utf-8"
+    )
+    for name in ("one.py", "two.py"):
+        target = git_repo / "src" / name
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("present\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "multiple contracts")
+
+    outputs = []
+    for _ in range(3):
+        assert main(
+            ["diff", "--base", "HEAD", "--ci", "--require-contracts"], cwd=git_repo
+        ) == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        outputs.append(captured.out)
+
+    assert outputs == [
+        "InstrProof ✓\n\n"
+        "2 baseline contracts checked.\n"
+        "No instruction contract regressions.\n"
+    ] * 3
 
 
 def test_ci_reports_one_path_regression(committed_repo: Path, capsys) -> None:
@@ -357,6 +424,90 @@ def test_ci_unexpected_failure_is_sanitized_analysis_error(
     )
     assert "sensitive internal detail" not in captured.err
     assert "regression" not in captured.err.lower()
+
+
+def test_ci_require_contracts_preserves_unavailable_base_error(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "README.md").write_text("only revision\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "single revision checkout")
+
+    assert main(
+        ["diff", "--base", "missing-ref", "--ci", "--require-contracts"],
+        cwd=git_repo,
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\n"
+        "Analysis error: BASE reference 'missing-ref' is unavailable. "
+        "Ensure the exact reference exists in the local checkout.\n"
+    )
+    assert "no baseline instruction contracts" not in captured.err
+
+
+@pytest.mark.parametrize("state", ["BASE", "HEAD"])
+def test_ci_require_contracts_preserves_configuration_errors(
+    git_repo: Path, capsys, state: str
+) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        "{" if state == "BASE" else "{}\n", encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "configuration base")
+    if state == "HEAD":
+        (git_repo / "instrproof.json").write_text("{", encoding="utf-8")
+
+    assert main(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\n"
+        f"Analysis error: {state} instrproof.json is malformed JSON\n"
+    )
+    assert "no baseline instruction contracts" not in captured.err
+
+
+def test_ci_require_contracts_preserves_repository_error(
+    git_repo: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_repository, _base_ref: str) -> ComparisonResult:
+        raise RepositoryError("repository comparison failed")
+
+    monkeypatch.setattr("instrproof.cli.compare_repository", fail)
+    assert main(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\nAnalysis error: repository comparison failed\n"
+    )
+    assert "no baseline instruction contracts" not in captured.err
+
+
+def test_ci_require_contracts_preserves_unexpected_error(
+    git_repo: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_repository, _base_ref: str) -> ComparisonResult:
+        raise RuntimeError("sensitive internal detail")
+
+    monkeypatch.setattr("instrproof.cli.compare_repository", fail)
+    assert main(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "InstrProof ✗\n\nAnalysis error: internal analysis failure.\n"
+    )
+    assert "sensitive internal detail" not in captured.err
+    assert "no baseline instruction contracts" not in captured.err
 
 
 def test_non_ci_commands_remain_unchanged_after_ci_execution(

@@ -263,11 +263,20 @@ Use CI mode to run the same BASE/HEAD regression analysis with concise,
 deterministic build-log output:
 
 ```sh
-instrproof diff --base origin/main --ci
+instrproof diff --base origin/main --ci --require-contracts
 ```
 
 `--ci` changes only presentation and process status. It does not change which
 contracts are selected or which repository changes count as regressions.
+
+Zero baseline contracts are allowed by default, because some repositories
+intentionally have no supported instruction contracts. For CI workflows that
+expect InstrProof to protect at least one contract, add `--require-contracts`.
+A completed comparison with zero baseline contracts then writes an analysis
+error to stderr and exits with status `2` instead of reporting success.
+
+This option verifies only that baseline coverage is nonempty. It does not prove
+the correctness or completeness of every natural-language instruction.
 
 A completed comparison with no regressions exits `0` and reports the number of
 baseline contracts checked:
@@ -333,7 +342,7 @@ jobs:
       - name: Make BASE available
         run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
       - name: Check instruction contracts
-        run: instrproof diff --base origin/main --ci
+        run: instrproof diff --base origin/main --ci --require-contracts
 ```
 
 Configure the `instruction-contracts` job as a required check. Exit `0` passes;

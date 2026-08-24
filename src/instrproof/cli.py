@@ -29,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     diff = subcommands.add_parser("diff", help="compare instruction contracts with a BASE ref")
     diff.add_argument("--base", required=True, metavar="BASE_REF")
     diff.add_argument("--ci", action="store_true", help="format the result for CI logs")
+    diff.add_argument(
+        "--require-contracts",
+        action="store_true",
+        help="fail when the baseline contains no instruction contracts",
+    )
     subcommands.add_parser("check", help="inspect current verified instruction contracts")
     explain = subcommands.add_parser(
         "explain", help="explain current evidence at a source location"
@@ -204,6 +209,22 @@ def main(argv: Sequence[str] | None = None, *, cwd: Path | None = None) -> int:
         if not args.ci:
             raise
         print(format_ci_error("internal analysis failure."), file=sys.stderr)
+        return 2
+    if args.require_contracts and result.baseline_contract_count == 0:
+        if args.ci:
+            print(
+                format_ci_error(
+                    "no baseline instruction contracts were found. Verify "
+                    "instruction discovery, supported claim syntax, and BASE evidence."
+                ),
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "error: no baseline instruction contracts were found; verify "
+                "instruction discovery, supported claim syntax, and BASE evidence",
+                file=sys.stderr,
+            )
         return 2
     print(format_ci_result(result) if args.ci else format_result(result))
     return 1 if result.regressions else 0

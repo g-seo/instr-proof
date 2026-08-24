@@ -60,6 +60,10 @@ def assert_installed_cli(artifact: Path, tmp_path: Path) -> None:
     assert "check" in help_result.stdout
     assert "diff" in help_result.stdout
 
+    diff_help = run(str(cli), "diff", "--help", cwd=neutral, env=env)
+    assert diff_help.returncode == 0
+    assert "--require-contracts" in diff_help.stdout
+
     version_result = run(str(cli), "--version", cwd=neutral, env=env)
     assert version_result.returncode == 0
     assert version_result.stdout == f"instrproof {__version__}\n"
@@ -77,6 +81,85 @@ def assert_installed_cli(artifact: Path, tmp_path: Path) -> None:
     assert lines[0] == __version__
     assert str(venv) in lines[1]
     assert str(ROOT) not in lines[1]
+
+    repository = tmp_path / "strict-repository"
+    repository.mkdir()
+    (repository / "AGENTS.md").write_text("Use `src/app.py`.\n", encoding="utf-8")
+    target = repository / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text("app\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "-q"),
+        ("git", "config", "user.email", "instrproof@example.test"),
+        ("git", "config", "user.name", "InstrProof Test"),
+        ("git", "add", "."),
+        ("git", "commit", "-qm", "strict fixture"),
+    ):
+        result = run(*command, cwd=repository, env=env)
+        assert result.returncode == 0, result.stderr
+
+    strict_pass = run(
+        str(cli), "diff", "--base", "HEAD", "--ci", "--require-contracts",
+        cwd=repository, env=env,
+    )
+    assert strict_pass.returncode == 0
+    assert strict_pass.stdout == (
+        "InstrProof ✓\n\n"
+        "1 baseline contracts checked.\n"
+        "No instruction contract regressions.\n"
+    )
+    assert strict_pass.stderr == ""
+
+    target.unlink()
+    strict_regression = run(
+        str(cli), "diff", "--base", "HEAD", "--ci", "--require-contracts",
+        cwd=repository, env=env,
+    )
+    assert strict_regression.returncode == 1
+    assert strict_regression.stdout == (
+        "InstrProof ✗\n\n"
+        "1 instruction contract regression\n\n"
+        "AGENTS.md:1\n"
+        "PathExists(src/app.py)\n"
+    )
+    assert strict_regression.stderr == ""
+
+    analysis_error = run(
+        str(cli), "diff", "--base", "missing-ref", "--ci", "--require-contracts",
+        cwd=repository, env=env,
+    )
+    assert analysis_error.returncode == 2
+    assert analysis_error.stdout == ""
+    assert analysis_error.stderr == (
+        "InstrProof ✗\n\n"
+        "Analysis error: BASE reference 'missing-ref' is unavailable. Ensure the "
+        "exact reference exists in the local checkout.\n"
+    )
+
+    empty_repository = tmp_path / "empty-repository"
+    empty_repository.mkdir()
+    (empty_repository / "README.md").write_text("empty\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "-q"),
+        ("git", "config", "user.email", "instrproof@example.test"),
+        ("git", "config", "user.name", "InstrProof Test"),
+        ("git", "add", "."),
+        ("git", "commit", "-qm", "empty fixture"),
+    ):
+        result = run(*command, cwd=empty_repository, env=env)
+        assert result.returncode == 0, result.stderr
+
+    zero_contracts = run(
+        str(cli), "diff", "--base", "HEAD", "--ci", "--require-contracts",
+        cwd=empty_repository, env=env,
+    )
+    assert zero_contracts.returncode == 2
+    assert zero_contracts.stdout == ""
+    assert zero_contracts.stderr == (
+        "InstrProof ✗\n\n"
+        "Analysis error: no baseline instruction contracts were found. Verify "
+        "instruction discovery, supported claim syntax, and BASE evidence.\n"
+    )
 
 
 def test_wheel_installs_and_runs_outside_checkout(

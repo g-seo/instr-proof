@@ -39,6 +39,17 @@ def test_release_validator_encodes_required_behavioral_phases() -> None:
     assert "unset PYTHONPATH" in text
     assert "diff-regression" in text
     assert "expected_status=1" in text
+    for name in (
+        "strict-pass",
+        "strict-regression",
+        "strict-zero-contracts",
+        "strict-analysis-error",
+    ):
+        assert name in text
+    assert 'strict-pass 0' in text
+    assert 'strict-regression 1' in text
+    assert 'strict-zero-contracts 2' in text
+    assert 'strict-analysis-error 2' in text
 
 
 def test_release_validator_uses_explicit_artifacts_without_publishing() -> None:

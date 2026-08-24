@@ -49,13 +49,26 @@ make_fixture() {
   git -C "$fixture" commit -qm "Create smoke-test fixture"
 }
 
+make_empty_fixture() {
+  local fixture=$1
+  mkdir -p "$fixture"
+  printf 'empty fixture\n' >"$fixture/README.md"
+  git -C "$fixture" init -q
+  git -C "$fixture" config user.name "InstrProof release validation"
+  git -C "$fixture" config user.email "release-validation@example.invalid"
+  git -C "$fixture" add README.md
+  git -C "$fixture" commit -qm "Create empty smoke-test fixture"
+}
+
 smoke_artifact() {
   local python_path=$1
   local cli_path=$2
   local fixture=$3
   local result_dir=$4
+  local empty_fixture="$fixture-empty"
   mkdir -p "$result_dir"
   make_fixture "$fixture"
+  make_empty_fixture "$empty_fixture"
 
   if [[ ! -x $cli_path ]]; then
     printf 'Installed instrproof CLI is missing or not executable: %s\n' \
@@ -72,10 +85,22 @@ smoke_artifact() {
       'import instrproof; print(instrproof.__version__)'
     run_capture "$result_dir" check 0 "$cli_path" check
     run_capture "$result_dir" diff-pass 0 "$cli_path" diff --base HEAD
+    run_capture "$result_dir" strict-pass 0 \
+      "$cli_path" diff --base HEAD --ci --require-contracts
     find src -type f -name app.py -delete
     local expected_status=1
     run_capture "$result_dir" diff-regression "$expected_status" \
       "$cli_path" diff --base HEAD
+    run_capture "$result_dir" strict-regression 1 \
+      "$cli_path" diff --base HEAD --ci --require-contracts
+    run_capture "$result_dir" strict-analysis-error 2 \
+      "$cli_path" diff --base missing-ref --ci --require-contracts
+  )
+  (
+    cd "$empty_fixture"
+    unset PYTHONPATH
+    run_capture "$result_dir" strict-zero-contracts 2 \
+      "$cli_path" diff --base HEAD --ci --require-contracts
   )
 
   "$python_path" -I -c \

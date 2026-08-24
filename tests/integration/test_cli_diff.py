@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from instrproof.cli import main
+from instrproof.cli import build_parser, main
+from instrproof.compare import compare_repository
+from instrproof.models import ComparisonResult
 from instrproof.repository import GitRepository, RepositoryError
 
 from conftest import git
@@ -80,7 +82,146 @@ def test_zero_match_configuration_succeeds(git_repo: Path, capsys) -> None:
     git(git_repo, "add", ".")
     git(git_repo, "commit", "-qm", "zero match")
     assert main(["diff", "--base", "HEAD"], cwd=git_repo) == 0
-    assert capsys.readouterr().out == "No instruction contract regressions found.\n"
+    captured = capsys.readouterr()
+    assert captured.out == "No instruction contract regressions found.\n"
+    assert captured.err == ""
+
+
+def test_require_contracts_rejects_zero_baseline_contracts(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "empty contract base")
+
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "error: no baseline instruction contracts were found; verify instruction "
+        "discovery, supported claim syntax, and BASE evidence\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ["diff", "--require-contracts", "--base", "HEAD"],
+        ["diff", "--base", "HEAD", "--require-contracts"],
+        ["diff", "--ci", "--require-contracts", "--base", "HEAD"],
+        ["diff", "--base", "HEAD", "--require-contracts", "--ci"],
+    ),
+)
+def test_require_contracts_preserves_diff_argument_ordering(
+    git_repo: Path, capsys, arguments: list[str]
+) -> None:
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "empty contract base")
+
+    assert main(arguments, cwd=git_repo) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_require_contracts_is_scoped_to_diff_help(capsys) -> None:
+    parser = build_parser()
+    normal = parser.parse_args(["diff", "--base", "HEAD", "--require-contracts"])
+    ci = parser.parse_args(
+        ["diff", "--base", "HEAD", "--ci", "--require-contracts"]
+    )
+    assert normal.require_contracts is True
+    assert normal.ci is False
+    assert ci.require_contracts is True
+    assert ci.ci is True
+
+    for arguments in (["--help"], ["check", "--help"], ["explain", "--help"]):
+        with pytest.raises(SystemExit) as exc_info:
+            main(arguments)
+        assert exc_info.value.code == 0
+        assert "--require-contracts" not in capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["diff", "--help"])
+    assert exc_info.value.code == 0
+    assert "--require-contracts" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (["check", "--require-contracts"], ["explain", "AGENTS.md:1", "--require-contracts"]),
+)
+def test_non_diff_commands_reject_require_contracts(capsys, arguments: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(arguments)
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unrecognized arguments: --require-contracts" in captured.err
+
+
+@pytest.mark.parametrize("regression", [False, True])
+def test_require_contracts_preserves_normal_nonzero_results(
+    committed_repo: Path, capsys, regression: bool
+) -> None:
+    if regression:
+        (committed_repo / "src" / "auth" / "service.py").unlink()
+
+    expected_status = main(["diff", "--base", "HEAD"], cwd=committed_repo)
+    expected = capsys.readouterr()
+
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=committed_repo
+    ) == expected_status
+    actual = capsys.readouterr()
+    assert actual.out == expected.out
+    assert actual.err == expected.err == ""
+
+
+def test_require_contracts_uses_deduplicated_baseline_count(
+    git_repo: Path, capsys
+) -> None:
+    (git_repo / "AGENTS.md").write_text(
+        "Use `src/service.py`.\nUse `src/service.py`.\n", encoding="utf-8"
+    )
+    target = git_repo / "src" / "service.py"
+    target.parent.mkdir()
+    target.write_text("service\n", encoding="utf-8")
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "duplicate claims")
+
+    result = compare_repository(GitRepository.discover(git_repo), "HEAD")
+    assert result.baseline_contract_count == 1
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=git_repo
+    ) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "No instruction contract regressions found.\n"
+    assert captured.err == ""
+
+
+def test_require_contracts_invokes_comparison_once(
+    git_repo: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = 0
+    result = ComparisonResult(1, ())
+
+    def compare_once(_repository, base_ref: str) -> ComparisonResult:
+        nonlocal calls
+        calls += 1
+        assert base_ref == "HEAD"
+        return result
+
+    monkeypatch.setattr("instrproof.cli.compare_repository", compare_once)
+
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=git_repo
+    ) == 0
+    assert calls == 1
+    captured = capsys.readouterr()
+    assert captured.out == "No instruction contract regressions found.\n"
+    assert captured.err == ""
 
 
 def test_malformed_configuration_is_cli_error(git_repo: Path, capsys) -> None:
@@ -105,6 +246,76 @@ def test_malformed_head_configuration_is_cli_error(git_repo: Path, capsys) -> No
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: HEAD instrproof.json is malformed JSON\n"
+
+
+def test_require_contracts_preserves_unavailable_base_error(
+    committed_repo: Path, capsys
+) -> None:
+    assert main(
+        ["diff", "--base", "missing-ref", "--require-contracts"], cwd=committed_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error:")
+    assert "no baseline instruction contracts" not in captured.err
+
+
+@pytest.mark.parametrize("state", ["BASE", "HEAD"])
+def test_require_contracts_preserves_configuration_errors(
+    git_repo: Path, capsys, state: str
+) -> None:
+    (git_repo / "AGENTS.md").write_text("Read `README.md`.\n", encoding="utf-8")
+    (git_repo / "README.md").write_text("base\n", encoding="utf-8")
+    (git_repo / "instrproof.json").write_text(
+        "{" if state == "BASE" else "{}\n", encoding="utf-8"
+    )
+    git(git_repo, "add", ".")
+    git(git_repo, "commit", "-qm", "configuration base")
+    if state == "HEAD":
+        (git_repo / "instrproof.json").write_text("{", encoding="utf-8")
+
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"error: {state} instrproof.json is malformed JSON\n"
+    assert "no baseline instruction contracts" not in captured.err
+
+
+def test_require_contracts_preserves_unreadable_instruction_error(
+    committed_repo: Path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Path.read_text
+
+    def fail_instruction(path: Path, *args, **kwargs):
+        if path.name == "AGENTS.md":
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_instruction)
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=committed_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: cannot read instruction: AGENTS.md\n"
+    assert "no baseline instruction contracts" not in captured.err
+
+
+def test_require_contracts_preserves_malformed_required_data_error(
+    git_repo: Path, capsys
+) -> None:
+    commit_package_contract(git_repo)
+    (git_repo / "package.json").write_text("{", encoding="utf-8")
+
+    assert main(
+        ["diff", "--base", "HEAD", "--require-contracts"], cwd=git_repo
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: HEAD package.json is malformed JSON\n"
+    assert "no baseline instruction contracts" not in captured.err
 
 
 def commit_custom_instruction_contract(repo: Path) -> Path:

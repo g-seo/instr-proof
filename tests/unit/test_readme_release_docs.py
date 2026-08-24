@@ -31,7 +31,16 @@ def test_consumer_workflow_selects_version_and_materializes_base() -> None:
     assert 'python-version: "3.12"' in text
     assert 'instrproof==${INSTRPROOF_VERSION}' in text
     assert "+refs/heads/main:refs/remotes/origin/main" in text
-    assert "instrproof diff --base origin/main --ci" in text
+    assert "instrproof diff --base origin/main --ci --require-contracts" in text
+
+
+def test_require_contracts_ci_policy_is_documented() -> None:
+    text = readme()
+    assert "zero baseline contracts" in text
+    assert "--require-contracts" in text
+    assert "status `2`" in text
+    assert "at least one" in text
+    assert "correctness or completeness" in text
 
 
 def test_statuses_and_pre_release_boundary_are_documented() -> None:
