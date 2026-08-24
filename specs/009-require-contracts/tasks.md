@@ -147,7 +147,7 @@
 - [x] T039 Run the complete suite with `uv run pytest` and require all existing and new exact-output assertions to pass
 - [x] T040 Run the unchanged public demonstration with `./scripts/run-demo.sh` and verify its command text, output, and status remain unchanged
 - [x] T041 Run release validation with `./scripts/validate-release.sh` and require wheel/source-distribution installation and captured behavior equivalence to pass
-- [ ] T042 Verify `.github/workflows/ci.yml` retains the Python 3.12, 3.13, and 3.14 test matrix, then require a successful complete-suite CI job result for every version before completion without modifying the workflow
+- [x] T042 Verify `.github/workflows/ci.yml` retains the Python 3.12, 3.13, and 3.14 test matrix, then require a successful complete-suite CI job result for every version before completion without modifying the workflow
 - [x] T043 Inspect `git diff --check`, `git diff`, and `git status --short`; confirm changes are limited to feature 009 artifacts, `src/instrproof/cli.py`, focused tests, `scripts/validate-release.sh`, and `README.md`
 
 ---
