@@ -8,7 +8,6 @@ import signal
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 
@@ -216,18 +215,18 @@ def test_three_offline_runs_are_equivalent_fast_and_self_cleaning(
     assert outputs[0] == outputs[1] == outputs[2]
 
 
-def test_external_absolute_temp_base_is_cleaned() -> None:
-    external_parent = Path("/var/tmp")
-    if not external_parent.is_dir() or not os.access(external_parent, os.W_OK):
-        raise AssertionError("supported Linux environment requires writable /var/tmp")
-    owned_base = Path(tempfile.mkdtemp(prefix="instrproof-demo-test.", dir=external_parent))
-    try:
-        env = {**os.environ, "TMPDIR": str(owned_base), "UV_OFFLINE": "1"}
-        result = run_demo(env=env)
-        assert result.returncode == 0, result.stderr
-        assert_no_demo_directories(owned_base)
-    finally:
-        shutil.rmtree(owned_base)
+def test_external_absolute_temp_base_is_cleaned(tmp_path: Path) -> None:
+    owned_base = tmp_path / "external-temp-base"
+    owned_base.mkdir()
+
+    assert owned_base.is_absolute()
+    assert ROOT not in owned_base.parents
+
+    env = {**os.environ, "TMPDIR": str(owned_base), "UV_OFFLINE": "1"}
+    result = run_demo(env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert_no_demo_directories(owned_base)
 
 
 def test_temp_base_inside_parent_is_rejected_without_parent_mutation() -> None:
