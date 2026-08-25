@@ -1,0 +1,59 @@
+name: Feature request
+description: Propose a focused InstrProof improvement
+title: "[Feature]: "
+labels:
+
+* enhancement
+  body:
+
+* type: markdown
+  attributes:
+  value: |
+  InstrProof prioritizes deterministic, repository-evidenced behavior and high precision.
+
+* type: textarea
+  id: problem
+  attributes:
+  label: Problem
+  description: What concrete user problem is not currently handled?
+  validations:
+  required: true
+
+* type: textarea
+  id: example
+  attributes:
+  label: Repository-grounded example
+  description: Show the instruction, repository evidence, change, and expected result.
+  placeholder: |
+  Instruction:
+  Repository evidence:
+  Repository change:
+  Expected InstrProof result:
+  validations:
+  required: true
+
+* type: textarea
+  id: proposed-behavior
+  attributes:
+  label: Proposed behavior
+  description: Describe the smallest behavior that would solve the problem.
+  validations:
+  required: true
+
+* type: textarea
+  id: alternatives
+  attributes:
+  label: Alternatives considered
+  description: Describe existing commands or workarounds you considered.
+
+* type: checkboxes
+  id: scope
+  attributes:
+  label: Scope checks
+  options:
+  - label: This proposal preserves deterministic behavior or explains why it cannot.
+  required: true
+  - label: This proposal does not require sharing private repository content.
+  required: true
+  - label: I reviewed the supported contracts and non-goals in the README.
+  required: true

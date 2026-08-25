@@ -1,0 +1,83 @@
+name: Bug report
+description: Report reproducible incorrect InstrProof behavior
+title: "[Bug]: "
+labels:
+
+* bug
+  body:
+
+* type: markdown
+  attributes:
+  value: |
+  Thank you for reporting a bug. Do not include secrets or private repository content.
+
+* type: input
+  id: instrproof-version
+  attributes:
+  label: InstrProof version
+  description: Run `instrproof --version` or provide the commit SHA.
+  placeholder: "instrproof 0.1.0"
+  validations:
+  required: true
+
+* type: input
+  id: python-version
+  attributes:
+  label: Python version
+  placeholder: "Python 3.12.7"
+  validations:
+  required: true
+
+* type: input
+  id: operating-system
+  attributes:
+  label: Operating system
+  placeholder: "Ubuntu 24.04"
+  validations:
+  required: true
+
+* type: textarea
+  id: command
+  attributes:
+  label: Command
+  description: Provide the exact command, including the BASE reference.
+  render: shell
+  validations:
+  required: true
+
+* type: textarea
+  id: reproduction
+  attributes:
+  label: Reproduction steps
+  description: Provide a minimal, non-sensitive reproduction.
+  placeholder: |
+  1. Create...
+  2. Run...
+  3. Observe...
+  validations:
+  required: true
+
+* type: textarea
+  id: expected
+  attributes:
+  label: Expected behavior
+  validations:
+  required: true
+
+* type: textarea
+  id: actual
+  attributes:
+  label: Actual behavior and output
+  render: text
+  validations:
+  required: true
+
+* type: checkboxes
+  id: checks
+  attributes:
+  label: Before submitting
+  options:
+  - label: I removed secrets and private repository content.
+  required: true
+  - label: I searched existing issues for duplicates.
+  required: true
