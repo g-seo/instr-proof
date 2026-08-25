@@ -11,6 +11,7 @@
 .specify/
 /AGENTS.md
 .agents/
+specs/
 
 # Python
 __pycache__/
