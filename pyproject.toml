@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "instrproof"
-description = "Detect broken repository paths in AI coding instructions"
+description = "Detect stale repository references in AI coding instructions"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"

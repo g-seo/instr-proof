@@ -1,439 +1,108 @@
 # InstrProof
 
-InstrProof detects repository paths and package scripts in AI coding instructions that existed at a chosen BASE revision but disappeared from the current working tree while the same instruction claim remains.
+> Regression testing for AI coding instructions.
 
-## Requirements
+InstrProof detects stale repository references in `AGENTS.md`, `CLAUDE.md`, and other AI coding instruction files.
 
-- Python 3.12 or newer
-- Git
-- [uv](https://docs.astral.sh/uv/)
+* **Path & Link Contracts** — recognizes repository paths and local Markdown links backed by repository evidence.
+* **Package Script Contracts** — recognizes referenced `npm`, `pnpm`, and `yarn` scripts.
+* **Regression Detection** — catches BASE-valid instruction references that become stale after code changes.
+* **Deterministic CI Checks** — uses repository evidence instead of LLM interpretation.
 
-## Install from PyPI
+## Why?
 
-```sh
-python -m pip install instrproof
-instrproof --help
-```
-
-PyPI installation requires Python 3.12 or newer. InstrProof has no runtime
-Python dependencies.
-
-## Install from GitHub
-
-Install the current source directly from the canonical repository:
-
-```sh
-python -m pip install "git+https://github.com/g-seo/instr-proof.git"
-instrproof --help
-```
-
-## Install a built artifact
-
-After running `uv build`, install the wheel by its local path:
-
-```sh
-python -m pip install dist/instrproof-*.whl
-instrproof --version
-```
-
-To validate the source distribution instead, use
-`python -m pip install dist/instrproof-*.tar.gz` in a separate clean virtual
-environment.
-
-## Local contributor installation
-
-Clone the repository and synchronize the locked development environment:
-
-```sh
-git clone https://github.com/g-seo/instr-proof.git
-cd instr-proof
-uv sync --locked --dev
-uv run pytest
-uv run instrproof --help
-```
-
-Pytest is used for automated tests, and Hatchling is used only to build the
-installable package.
-
-## Reproducible demo
-
-After installing Git and uv and synchronizing the project dependencies, run the
-complete public demonstration with one command:
-
-```sh
-./scripts/run-demo.sh
-```
-
-The demo creates a separate temporary Git repository and does not modify this
-InstrProof checkout. It verifies unchanged parent Git status plus the path,
-file type, complete-content digest, symlink target, and executable mode of every
-tracked and non-ignored untracked file. It first proves one instruction contract is valid, then
-moves the referenced source while ordinary application tests continue to pass.
-The stale instruction produces exactly one expected InstrProof CI regression
-and status `1`. Finally, the instruction is updated and the same `demo-base`
-comparison returns status `0`. The complete workflow runs offline after setup
-and is expected to finish within 30 seconds on supported Linux systems.
-
-Temporary state is removed by default. To retain the repaired repository:
-
-```sh
-./scripts/run-demo.sh --keep
-```
-
-The final `Retained demo repository: ...` line gives its absolute path. Inside
-that repository, inspect `git status`, `git log`, `AGENTS.md`, and the
-`demo-base` tag. To rerun the public checks, substitute the absolute InstrProof
-checkout path below:
-
-```sh
-uv run --offline --project /path/to/instr-proof instrproof check
-uv run --offline --project /path/to/instr-proof instrproof diff --base demo-base --ci
-```
-
-The retained directory is user-owned; remove only the displayed temporary
-directory when inspection is complete.
-
-## Usage
-
-Run commands from anywhere inside the repository. To inspect contracts whose
-evidence exists in the current working tree:
-
-```sh
-uv run instrproof check
-```
-
-The output contains one deterministic row per contract identity, including its
-representative diagnostic source line, type, normalized target, and
-`current=present`, followed by an exact total. Claims with missing evidence and
-unsupported or ambiguous text are not listed. Finding zero verified contracts
-is successful.
-
-To inspect every supported contract occurrence at an exact source line:
-
-```sh
-uv run instrproof explain AGENTS.md:37
-uv run instrproof explain packages/auth/AGENTS.md:12
-```
-
-`explain` shows the source, type, normalized target, exact evidence reference,
-and a current state of `PRESENT` or `MISSING`. A missing occurrence remains
-explainable even though `check` does not verify it. Matching is exact against a
-normalized repository-relative source and positive line; all distinct matches
-on that line are shown in deterministic identity order. A valid location with
-no supported occurrence reports a clear no-match result and status `1`.
-
-These commands inspect only the current working tree and do not expose or infer
-BASE/HEAD comparison state. Regression detection remains:
-
-```sh
-uv run instrproof diff --base origin/main
-```
-
-BASE is read from the specified Git commit without checking it out. HEAD is the current working tree, including tracked modifications and non-ignored untracked files, so the same workflow supports local changes and clean CI checkouts.
-
-## Instruction discovery
-
-By default, InstrProof discovers every repository file named `AGENTS.md` or
-`CLAUDE.md`, at the repository root or at any nested depth. Each discovered
-document is an independent instruction source, identified by its complete,
-repository-relative `/`-separated path.
-
-Repositories can add exact files and glob patterns with an optional root
-`instrproof.json`:
-
-```json
-{
-  "instructions": [
-    ".claude/rules/**/*.md",
-    "docs/agent-instructions.md"
-  ]
-}
-```
-
-The file must be UTF-8 JSON with an object root and may contain only the
-optional `instructions` array of strings. Paths and patterns are
-repository-relative and case-sensitive. `*`, `?`, and bracket expressions
-match within one path segment; `**` as a complete segment matches zero or more
-segments. Paths use `/` on every platform and cannot be absolute, escape the
-repository, contain NUL or backslash characters, or contain malformed glob
-expressions.
-
-Overlapping and duplicate rules are allowed. InstrProof normalizes and
-deduplicates matches by complete repository-relative path, so each physical
-document is analyzed once per repository state. A valid rule matching no files
-is not an error. Malformed, invalid, or unreadable configuration is an explicit
-analysis error and returns status `2`.
-
-For `diff`, configuration is revision-owned repository state: BASE discovery
-reads `instrproof.json` from the exact resolved BASE tree, while normal HEAD
-discovery reads the current working-tree file. Absence in either state means no
-additional rules for that state. A rule added only in HEAD cannot create a
-retroactive BASE contract.
-
-Comparison also inspects the readable working-tree version of every source path
-discovered in BASE. Therefore removing a custom rule in HEAD cannot hide a
-surviving stale claim from that source. Updating or removing the claim, or
-removing the source file, retains the existing coordinated-update and
-instruction-removal behavior. Default `AGENTS.md` and `CLAUDE.md` discovery
-still applies independently in both states, and overlapping selections are
-normalized, deduplicated, and analyzed once. `check` and `explain` remain
-current-only and use only working-tree configuration. Discovery does not model
-any coding agent's loading, precedence, inheritance, or scope behavior.
-
-## Supported instruction contracts
-
-InstrProof recognizes two deliberately narrow forms in every discovered source:
-
-- Repository-root-relative paths in inline code, such as `` `src/auth/service.py` ``.
-- Supported repository-root filenames in inline code, such as `` `README.md` ``,
-  `` `Cargo.toml` ``, `` `package.json` ``, and `` `.pre-commit-config.yaml` ``.
-- Local Markdown links, such as `[API](api.md)`, resolved relative to the instruction document containing the link.
-
-An extension-bearing root filename is considered only when its final extension
-begins with an ASCII letter. The exact supported extensionless root filenames
-are `Makefile`, `Dockerfile`, `Containerfile`, `Justfile`, `Procfile`, `LICENSE`,
-and `NOTICE`. Matching is case-sensitive. As with nested paths, a lexical
-candidate becomes a contract only when its exact path exists in BASE.
-
-Targets are normalized to repository-relative `/`-separated paths. Candidates that escape the repository, use absolute or external destinations, occur only in arbitrary prose or fenced code, or do not exist in BASE are not monitored. This precision boundary is deterministic and uses no LLM.
-
-InstrProof also recognizes these package-script command forms in instruction prose and inline code:
+AI coding instructions depend on repository facts. After a refactor, those references can become stale even while application tests continue to pass.
 
 ```text
-npm run SCRIPT
-pnpm run SCRIPT
-pnpm SCRIPT
-yarn run SCRIPT
-yarn SCRIPT
+src/auth/service.py
+        ↓ refactor
+src/auth/auth_service.py
+
+Application tests   ✓
+AGENTS.md            stale
+InstrProof           ✗
 ```
 
-`SCRIPT` is case-sensitive and matches `[A-Za-z0-9][A-Za-z0-9._:/-]*`. Whitespace, inline-code boundaries, end of text, the delimiters `, ) ] } ! ? .`, and the operators `&&`, `||`, `;`, and `|` terminate the token. Trailing arguments are not interpreted. Commands inside fenced code blocks are ignored.
+InstrProof turns these repository-backed references into regression-testable contracts.
 
-The exact pnpm shorthand exclusions are:
+## Example
+
+`AGENTS.md`:
+
+```markdown
+Authentication logic is implemented in `src/auth/service.py`.
+```
+
+Before the refactor:
 
 ```text
-add approve-builds audit bin completion config create deploy dlx env exec fetch
-help import init install link list outdated pack patch patch-commit patch-remove
-prune publish rebuild remove root self-update server setup store unlink update view why
+$ instrproof check
+
+Found 1 verified instruction contract:
+PathExists  source=AGENTS.md:1  target=src/auth/service.py  current=present
 ```
 
-The exact yarn shorthand exclusions are:
+After moving the file without updating `AGENTS.md`:
 
 ```text
-add bin cache completion config constraints create dedupe dlx exec explain help info
-init install link npm pack patch patch-commit plugin rebuild remove search set stage
-unlink unplug up upgrade version why workspace workspaces
+$ instrproof diff --base demo-base --ci
+
+InstrProof ✗
+
+1 instruction contract regression
+
+AGENTS.md:1
+PathExists(src/auth/service.py)
 ```
 
-Explicit `pnpm run SCRIPT` and `yarn run SCRIPT` bypass shorthand exclusions. A package-script candidate becomes a `PackageScriptExists` contract only when that exact key exists under `scripts` in BASE's repository-root `package.json`; nested/workspace manifests are not inspected.
-
-## Comparison behavior
-
-A BASE-valid `PathExists` or `PackageScriptExists` contract is identified by its instruction source, contract type, and normalized target. Line numbers, surrounding prose, package-manager spelling, link labels, and original claim spelling are not part of identity.
-
-- If the same claim and target exist in HEAD, the command passes.
-- If the same claim remains but the target is absent, it reports a regression.
-- If the instruction changes to another target or is removed, the old contract is retired without a regression.
-
-Passing output:
+After updating the instruction:
 
 ```text
-No instruction contract regressions found.
-```
+$ instrproof diff --base demo-base --ci
 
-Regression output is deterministic and sorted:
-
-```text
-Found 1 instruction contract regression:
-PathExists  source=AGENTS.md:4  target=src/auth/service.py  base=present  head=missing
-```
-
-Package-script regressions use the same diagnostic fields:
-
-```text
-Found 1 instruction contract regression:
-PackageScriptExists  source=AGENTS.md:7  target=typecheck  base=present  head=missing
-```
-
-Source locations and evidence states are diagnostics only and never participate in identity.
-
-## Continuous integration
-
-Use CI mode to run the same BASE/HEAD regression analysis with concise,
-deterministic build-log output:
-
-```sh
-instrproof diff --base origin/main --ci --require-contracts
-```
-
-`--ci` changes only presentation and process status. It does not change which
-contracts are selected or which repository changes count as regressions.
-
-Zero baseline contracts are allowed by default, because some repositories
-intentionally have no supported instruction contracts. For CI workflows that
-expect InstrProof to protect at least one contract, add `--require-contracts`.
-A completed comparison with zero baseline contracts then writes an analysis
-error to stderr and exits with status `2` instead of reporting success.
-
-This option verifies only that baseline coverage is nonempty. It does not prove
-the correctness or completeness of every natural-language instruction.
-
-A completed comparison with no regressions exits `0` and reports the number of
-baseline contracts checked:
-
-```text
 InstrProof ✓
 
-31 baseline contracts checked.
+1 baseline contracts checked.
 No instruction contract regressions.
 ```
 
-A completed comparison with regressions exits `1`, regardless of how many
-regressions were found. Every regression is printed once in deterministic
-source, contract-type, and target order:
+Run the complete scenario:
 
-```text
-InstrProof ✗
-
-2 instruction contract regressions
-
-AGENTS.md:24
-PathExists(src/auth/service.ts)
-
-AGENTS.md:37
-PackageScriptExists(typecheck)
+```bash
+./scripts/run-demo.sh
 ```
 
-If analysis cannot complete, CI mode writes a concise `Analysis error:` message
-to stderr and exits `2`. Analysis errors are never presented as regressions.
+The demo script requires `uv` and a Unix-like shell environment.
 
-The exact BASE passed with `--base` must resolve in the local checkout.
-InstrProof does not fetch, guess, or substitute another revision. In particular,
-the default shallow checkout used by many CI systems may omit `origin/main`; in
-that case InstrProof exits `2` and asks you to make the requested reference
-available.
+## Usage
 
-### GitHub Actions
+```bash
+python -m pip install instrproof
 
-This minimal pull-request workflow fetches sufficient history and explicitly
-creates the remote-tracking BASE used by InstrProof:
+instrproof check
+instrproof explain AGENTS.md:1
+instrproof diff --base origin/main
+instrproof diff --base origin/main --ci --require-contracts
+```
+
+Python 3.12+ and Git are required.
+
+## GitHub Actions
 
 ```yaml
-name: InstrProof
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
 
-on:
-  pull_request:
+- uses: actions/setup-python@v5
+  with:
+    python-version: "3.12"
 
-env:
-  INSTRPROOF_VERSION: "0.1.0"
+- run: python -m pip install instrproof
 
-jobs:
-  instruction-contracts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install InstrProof
-        run: python -m pip install "instrproof==${INSTRPROOF_VERSION}"
-      - name: Make BASE available
-        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-      - name: Check instruction contracts
-        run: instrproof diff --base origin/main --ci --require-contracts
+- run: instrproof diff --base origin/main --ci --require-contracts
 ```
 
-Configure the `instruction-contracts` job as a required check. Exit `0` passes;
-exit `1` fails for confirmed instruction regressions; exit `2` fails because
-InstrProof could not perform the comparison.
+## License
 
-## Exit statuses
-
-| Status | Meaning |
-|--------|---------|
-| `0` | Command completed successfully; for `diff`, no regressions were found, and for `check`, this includes zero contracts. |
-| `1` | `diff` found one or more regressions, or `explain` found no occurrence at a valid location. |
-| `2` | Arguments were invalid or repository analysis could not complete. |
-
-Operational failures are written to stderr with an `error:` prefix and are
-never represented as `MISSING` or a passing result. The existing `diff`
-arguments, output, regression semantics, and completion behavior are unchanged.
-
-## Pre-release validation
-
-Maintainers can validate a release candidate locally with one fail-fast command:
-
-```sh
-./scripts/validate-release.sh
-```
-
-The command creates a clean locked Python 3.12 development environment, runs
-the complete test suite, builds one wheel and one source distribution, performs
-strict metadata and license inspection, installs each artifact separately, and
-compares their CLI versions, output, errors, and statuses. Temporary build and
-installation paths are removed when validation finishes.
-
-Locked development and build dependencies may be downloaded from configured package indexes.
-This procedure does not install or query a published InstrProof release,
-does not upload artifacts, and requires no production
-credentials. A successful run exits `0`; an unexpected test, build, metadata,
-installation, or behavior-comparison failure stops at its named phase and exits
-nonzero. The intentional regression fixture exits `1` and is treated as an
-expected command result.
-
-## Manual publication
-
-Publication is a separate maintainer action performed only after pre-release
-validation succeeds. Build fresh artifacts, inspect them, and upload manually:
-
-```sh
-uv sync --locked --dev
-uv build
-uv run twine check --strict dist/*
-uv run python scripts/inspect_artifacts.py dist
-uv run twine upload dist/*
-```
-
-PyPI accounts, credentials, and publishing policy are managed outside this
-repository. Project CI never runs the upload command.
-
-## Post-publication verification
-
-After manual publication, set the exact released version and verify production
-PyPI from a clean environment and neutral Git repository:
-
-```sh
-INSTRPROOF_VERSION="0.1.0"
-POST_RELEASE_DIR=$(mktemp -d)
-python -m venv "$POST_RELEASE_DIR/venv"
-. "$POST_RELEASE_DIR/venv/bin/activate"
-python -m pip install "instrproof==$INSTRPROOF_VERSION"
-mkdir -p "$POST_RELEASE_DIR/repository/src"
-printf 'value = 1\n' >"$POST_RELEASE_DIR/repository/src/app.py"
-printf 'Use `src/app.py`.\n' >"$POST_RELEASE_DIR/repository/AGENTS.md"
-git -C "$POST_RELEASE_DIR/repository" init
-git -C "$POST_RELEASE_DIR/repository" config user.name "InstrProof verification"
-git -C "$POST_RELEASE_DIR/repository" config user.email "verify@example.invalid"
-git -C "$POST_RELEASE_DIR/repository" add AGENTS.md src/app.py
-git -C "$POST_RELEASE_DIR/repository" commit -m "Create verification fixture"
-cd "$POST_RELEASE_DIR/repository"
-instrproof --help
-instrproof --version
-instrproof check
-instrproof diff --base HEAD
-```
-
-Confirm `instrproof --version` reports the selected exact version. This
-post-publication check is deliberately separate from local validation and CI.
-
-## Testing
-
-```sh
-uv run pytest
-uv run pytest tests/unit
-uv run pytest tests/integration
-```
-
-Tests create repositories under pytest temporary directories; they do not modify the InstrProof repository.
+Apache License 2.0
